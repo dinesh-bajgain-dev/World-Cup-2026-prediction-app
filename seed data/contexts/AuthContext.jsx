@@ -4,6 +4,24 @@ import { supabase, getProfile, ensureProfile } from "../lib/supabase";
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
 
+// In your React component (e.g., AuthContext.jsx or wherever you handle signup)
+const sendWelcomeEmail = async (email) => {
+  const res = await fetch("/api/send-email", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      to: email,
+      subject: "Welcome to World Cup Predictor!",
+      html: "<h1>Welcome!</h1><p>Thanks for signing up.</p>",
+    }),
+  });
+
+  const data = await res.json();
+  if (!data.success) {
+    console.error("Email failed:", data.error);
+  }
+};
+
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);

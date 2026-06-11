@@ -170,9 +170,90 @@ export const adminGetAllPredictions = async ({
   let q = supabase
     .from("predictions")
     .select(
-      "*, profiles(username,display_name), matches(stage,group_id,home_team,away_team,match_date)",
+      "*, profiles(username,display_name), matches(stage,group_id,home_team,away_team,match_date,home_score,away_score)",
     );
   if (matchId) q = q.eq("match_id", matchId);
   if (stage) q = q.eq("matches.stage", stage);
   return q.order("submitted_at", { ascending: false });
+};
+
+// ─── Match result helpers ─────────────────────────────────────────────────────
+export const getFinishedMatches = async () =>
+  supabase
+    .from("matches")
+    .select("*")
+    .not("home_score", "is", null)
+    .not("away_score", "is", null);
+
+export const updatePredictionResults = async () => {
+  const { data: matches, error: matchError } = await getFinishedMatches();
+  if (matchError) return { error: matchError };
+
+  let totalCorrect = 0;
+  let totalUsers = 0;
+
+  for (const match of matches) {
+    const { data: predictions, error: predError } = await supabase
+      .from("predictions")
+      .select("*")
+      .eq("match_id", match.id);
+
+    if (predError) continue;
+
+    const actualWinner = match.home_score > match.away_score ? "home" 
+                       : match.away_score > match.home_score ? "away" 
+                       : "draw";
+
+    for (const pred of predictions) {
+      const userWinner = pred.predicted_home_score > pred.predicted_away_score ? "home"
+                       : pred.predicted_away_score > pred.predicted_home_score ? "away"
+                       : "draw";
+
+      const isCorrect = userWinner === actualWinner;
+      const pointsEarned = isCorrect ? 10 : 0;
+
+      await supabase
+        .from("predictions")
+        .update({
+          is_correct: isCorrect,
+          points_earned: pointsEarned,
+          final_score: `${match.home_score}-${match.away_score}`,
+        })
+        .eq("id", pred.id);
+
+      if (isCorrect) totalCorrect++;
+      totalUsers++;
+    }
+  }
+
+  return { data: { totalCorrect, totalUsers }, error: null };
+};
+
+export const updateLeaderboard = async () => {
+  const { data: users, error } = await supabase
+    .from("profiles")
+    .select("id, username");
+
+  if (error) return { error };
+
+  for (const user of users) {
+    const { data: predictions } = await supabase
+      .from("predictions")
+      .select("points_earned")
+      .eq("user_id", user.id)
+      .eq("is_correct", true);
+
+    const totalPoints = predictions?.reduce((sum, p) => sum + (p.points_earned || 0), 0) || 0;
+
+    await supabase
+      .from("leaderboard")
+      .upsert({
+        user_id: user.id,
+        total_points: totalPoints,
+        correct_predictions: predictions?.length || 0,
+      })
+      .eq("user_id", user.id);
+  }
+
+  return { data: null, error: null };
 };
