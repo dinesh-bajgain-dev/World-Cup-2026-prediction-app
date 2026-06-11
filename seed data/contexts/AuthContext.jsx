@@ -4,22 +4,56 @@ import { supabase, getProfile, ensureProfile } from "../lib/supabase";
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
 
-// In your React component (e.g., AuthContext.jsx or wherever you handle signup)
+// Add this helper function at the top of your file (outside the component)
 const sendWelcomeEmail = async (email) => {
-  const res = await fetch("/api/send-email", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      to: email,
-      subject: "Welcome to World Cup Predictor!",
-      html: "<h1>Welcome!</h1><p>Thanks for signing up.</p>",
-    }),
+  try {
+    const res = await fetch("/api/send-email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to: email,
+        subject: "Welcome to World Cup Predictor! 🏆",
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h1 style="color: #2563eb;">Welcome to World Cup Predictor!</h1>
+            <p>Hi there,</p>
+            <p>Thanks for joining the ultimate World Cup 2026 prediction game.</p>
+            <p>Start predicting matches now and climb the leaderboard to win!</p>
+            <a href="https://your-production-url.com" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin-top: 10px;">Start Predicting</a>
+            <p style="margin-top: 20px; color: #666; font-size: 12px;">
+              Best,<br>The World Cup Team
+            </p>
+          </div>
+        `,
+      }),
+    });
+
+    const data = await res.json();
+    if (!data.success) {
+      console.warn("Welcome email failed:", data.error);
+      // Don't block signup if email fails
+    }
+  } catch (err) {
+    console.error("Email API error:", err);
+  }
+};
+
+// Inside your signUp function, AFTER successful signup:
+export const signUp = async (email, password, username) => {
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: { data: { username } },
   });
 
-  const data = await res.json();
-  if (!data.success) {
-    console.error("Email failed:", data.error);
+  if (error) throw error;
+
+  // ✅ Send Brevo welcome email if signup succeeded
+  if (data?.user?.email) {
+    await sendWelcomeEmail(data.user.email);
   }
+
+  return { data, error };
 };
 
 export function AuthProvider({ children }) {
