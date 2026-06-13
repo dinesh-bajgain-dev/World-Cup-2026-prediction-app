@@ -1149,7 +1149,7 @@ function UserApp({ T, dark, setDark }) {
     getLeaderboard(100).then(({ data }) => setLB(data || []));
   }, [profile]);
   const loadAll = async () => {
-    // ── Step 1: Hydrate instantly from localStorage (zero latency) ────────────
+    // ── Step 1: Hydrate instantly from localStorage (zero latency) ───────────
     const cached = lsRead();
     if (cached.matchPreds) setMP(cached.matchPreds);
     if (cached.groupResults) setGR(cached.groupResults);
