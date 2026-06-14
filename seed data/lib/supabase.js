@@ -95,6 +95,40 @@ export const getPrediction = async (userId, matchId) =>
     .maybeSingle();
 
 export const upsertPrediction = async (prediction) => {
+  // ⛔ Server-side lock check: fetch match from DB and verify deadline
+  const { data: match, error: matchError } = await supabase
+    .from("matches")
+    .select("match_date, match_time, is_locked")
+    .eq("id", prediction.match_id)
+    .maybeSingle();
+
+  if (matchError) return { data: null, error: matchError };
+  if (!match) return { data: null, error: new Error("Match not found") };
+
+  // Check if match is explicitly locked
+  if (match.is_locked) {
+    return { data: null, error: new Error("Match is locked — predictions cannot be changed") };
+  }
+
+  // Check 30-min deadline using server DB time
+  const matchTime = new Date(`${match.match_date}T${match.match_time}`);
+  const deadline = new Date(matchTime.getTime() - 30 * 60000);
+  
+  // Use Supabase server time for the check
+  const { data: serverTime, error: timeError } = await supabase
+    .rpc('get_server_time')
+    .maybeSingle();
+
+  if (timeError) return { data: null, error: timeError };
+
+  const serverNow = serverTime?.server_time 
+    ? new Date(serverTime.server_time) 
+    : new Date(); // fallback to client time if RPC fails
+
+  if (serverNow >= deadline) {
+    return { data: null, error: new Error("Prediction deadline has passed (30 min before kick-off)") };
+  }
+
   const { data, error } = await supabase
     .from("predictions")
     .upsert(prediction, { onConflict: "user_id,match_id" })
@@ -107,23 +141,73 @@ export const upsertPrediction = async (prediction) => {
 export const getUserGroupQuals = async (userId) =>
   supabase.from("group_qualifications").select("*").eq("user_id", userId);
 
-export const upsertGroupQual = async (qual) =>
-  supabase
+export const upsertGroupQual = async (qual) => {
+  // Check if any match in this group is locked (past deadline)
+  const { data: matches, error: matchError } = await supabase
+    .from("matches")
+    .select("match_date, match_time, is_locked")
+    .eq("group_id", qual.group_id);
+
+  if (matchError) return { data: null, error: matchError };
+
+  // If any match in this group has started, lock all group predictions
+  const { data: serverTime } = await supabase.rpc('get_server_time').maybeSingle();
+  const serverNow = serverTime?.server_time ? new Date(serverTime.server_time) : new Date();
+
+  const anyLocked = matches?.some((m) => {
+    if (m.is_locked) return true;
+    const matchTime = new Date(`${m.match_date}T${m.match_time}`);
+    const deadline = new Date(matchTime.getTime() - 30 * 60000);
+    return serverNow >= deadline;
+  });
+
+  if (anyLocked) {
+    return { data: null, error: new Error("Group predictions are locked — a match in this group has started") };
+  }
+
+  return supabase
     .from("group_qualifications")
     .upsert(qual, { onConflict: "user_id,group_id" })
     .select()
     .single();
+};
 
 // ─── Knockout prediction helpers ──────────────────────────────────────────────
 export const getUserKnockoutPreds = async (userId) =>
   supabase.from("knockout_predictions").select("*").eq("user_id", userId);
 
-export const upsertKnockoutPred = async (pred) =>
-  supabase
+export const upsertKnockoutPred = async (pred) => {
+  const { data: serverTime } = await supabase.rpc('get_server_time').maybeSingle();
+  const serverNow = serverTime?.server_time ? new Date(serverTime.server_time) : new Date();
+
+  // Check if any knockout match for this stage is locked
+  const { data: matches, error: matchError } = await supabase
+    .from("matches")
+    .select("match_date, match_time, is_locked")
+    .eq("stage", pred.stage === "r32" ? "Round of 32" 
+      : pred.stage === "r16" ? "Round of 16"
+      : pred.stage === "qf" ? "Quarter Finals"
+      : pred.stage === "sf" ? "Semi Finals"
+      : pred.stage === "tp" ? "3rd Place Match"
+      : pred.stage === "final" ? "The Final" : pred.stage);
+
+  const anyLocked = matches?.some((m) => {
+    if (m.is_locked) return true;
+    const matchTime = new Date(`${m.match_date}T${m.match_time}`);
+    const deadline = new Date(matchTime.getTime() - 30 * 60000);
+    return serverNow >= deadline;
+  });
+
+  if (anyLocked) {
+    return { data: null, error: new Error("Knockout predictions are locked for this stage") };
+  }
+
+  return supabase
     .from("knockout_predictions")
     .upsert(pred, { onConflict: "user_id,stage,slot_index" })
     .select()
     .single();
+};
 
 // ─── Community odds ───────────────────────────────────────────────────────────
 export const getCommunityOdds = async (matchId) =>
@@ -137,7 +221,7 @@ export const getCommunityOdds = async (matchId) =>
 export const getLeaderboard = async (limit = 50) =>
   supabase
     .from("leaderboard")
-    .select("*")
+    .select("*, profiles(username, display_name)")
     .order("total_points", { ascending: false })
     .limit(limit);
 
