@@ -1146,8 +1146,36 @@ function UserApp({ T, dark, setDark }) {
   useEffect(() => {
     if (!profile) return;
     loadAll();
-    getLeaderboard(100).then(({ data }) => setLB(data || []));
+    getLeaderboard(100).then(({ data }) => setLB(formatLeaderboard(data || [])));
   }, [profile]);
+  
+  // Auto-refresh leaderboard every 60 seconds
+  useEffect(() => {
+    if (!profile) return;
+    const id = setInterval(() => {
+      getLeaderboard(500).then(({ data }) => setLB(formatLeaderboard(data || [])));
+    }, 60000);
+    return () => clearInterval(id);
+  }, [profile]);
+
+  // Auto-refresh match results from Supabase every 2 minutes
+  useEffect(() => {
+    if (!profile) return;
+    const id = setInterval(() => {
+      loadAll();
+    }, 120000);
+    return () => clearInterval(id);
+  }, [profile]);
+
+  const formatLeaderboard = (data) =>
+    data.map((u, i) => ({
+      ...u,
+      rank: i + 1,
+      accuracy_pct: u.total_predictions > 0
+        ? Math.round((u.correct_predictions || 0) / (u.total_predictions || 1) * 100)
+        : 0,
+      total_predictions: u.total_predictions || 0,
+    }));
   const loadAll = async () => {
     // ── Step 1: Hydrate instantly from localStorage (zero latency) ────────────
     const cached = lsRead();
@@ -1250,6 +1278,8 @@ function UserApp({ T, dark, setDark }) {
     if (error) {
       showToast(error.message, "error");
       setSaving(false);
+      // Revert the optimistic update by reloading from Supabase
+      loadAll();
       return;
     }
     const savedPrediction = data || optimistic;
@@ -2252,10 +2282,19 @@ const SAVE_STATUS = { idle: "idle", dirty: "dirty", saving: "saving", saved: "sa
 function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
   // ── Lock Logic: Lock 30 minutes BEFORE match starts ───
   const matchTime = new Date(`${match.match_date}T${match.match_time}`);
-  const now = new Date();
-  const deadline = new Date(matchTime.getTime() - 30 * 60000); // 30 min before
-  const isTimeLocked = now >= deadline; // Lock 30 min before kick-off
-  const isLocked = existing?.is_locked || isTimeLocked;
+  const deadline = new Date(matchTime.getTime() - 30 * 60000);
+  const isLocked = existing?.is_locked || new Date() >= deadline;
+  const [timeLeft, setTimeLeft] = useState(() => deadline - new Date());
+  
+  // Countdown timer: updates every second until deadline passes
+  useEffect(() => {
+    if (isLocked) return;
+    const id = setInterval(() => {
+      const remaining = deadline - new Date();
+      setTimeLeft(remaining > 0 ? remaining : 0);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [deadline, isLocked]);
   
   const [hg, setHg] = useState(() => existing?.predicted_home_score ?? 0);
   const [ag2, setAg2] = useState(() => existing?.predicted_away_score ?? 0);
@@ -2280,7 +2319,7 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
 
   // Save on every score change — but block if locked
   const doSave = useCallback(async (h, a) => {
-    if (isLocked) return; // ⛔ BLOCK SAVE if 30 min deadline passed
+    if (isLocked) return;
     setSaveStatus(SAVE_STATUS.saving);
     await onSave(h, a);
     setSaveStatus(SAVE_STATUS.saved);
@@ -2288,16 +2327,25 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
   }, [isLocked, onSave]);
 
   const handleSetHg = (v) => {
-    if (isLocked) return; // ⛔ BLOCK INPUT
+    if (isLocked) return;
     const a = ag2;
     setHg(v);
     doSave(v, a);
   };
   const handleSetAg2 = (v) => {
-    if (isLocked) return; // ⛔ BLOCK INPUT
+    if (isLocked) return;
     const h = hg;
     setAg2(v);
     doSave(h, v);
+  };
+
+  const formatCountdown = (ms) => {
+    if (ms <= 0) return null;
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return `${h}h ${m}m ${s}s`;
   };
 
   const chartData = [
@@ -2398,7 +2446,7 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
         transition: "border-color .3s",
       }}
     >
-      {isLocked ? (
+      {isLocked && timeLeft <= 0 ? (
         <div
           style={{
             background: `${T.red}15`,
@@ -2408,16 +2456,38 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
             fontSize: 12,
             color: T.red,
             textAlign: "center",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
           }}
         >
-          🔒 Prediction locked — deadline was 30 min before kick-off
+          <span>🔒</span> Prediction Closed
         </div>
-      ) : (
-        <div style={{ fontSize: 10, color: T.muted, textAlign: "center" }}>
-          📅 {match.match_date} · 🕐 {match.match_time} · 📍{" "}
-          {VENUES[match.venue] || match.venue}
+      ) : !isLocked && timeLeft > 0 && timeLeft < 600000 ? (
+        <div
+          style={{
+            background: `${T.orange}15`,
+            border: `1px solid ${T.orange}44`,
+            borderRadius: 8,
+            padding: "7px 12px",
+            fontSize: 12,
+            color: T.orange,
+            textAlign: "center",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
+            fontFamily: "Oswald",
+            fontWeight: 700,
+          }}
+        >
+          <span>⏰</span> Locks in {formatCountdown(timeLeft)}
         </div>
-      )}
+      ) : null}
+      <div style={{ fontSize: 10, color: T.muted, textAlign: "center" }}>
+        📅 {match.match_date} · 🕐 {match.match_time}
+      </div>
       <div
         style={{
           display: "grid",
@@ -4081,19 +4151,22 @@ function FullBracket() {
 
 function LeaderboardView() {
   const { T, leaderboard, profile } = useU();
+  const [page, setPage] = useState(1);
+  const perPage = 25;
+  const pageUsers = leaderboard.slice(0, page * perPage);
   const medals = ["🥇", "🥈", "🥉"];
+  const hasMore = page * perPage < leaderboard.length;
+  
   return (
     <div className="fade-up">
-      <h2
-        style={{
-          fontFamily: "Oswald",
-          fontSize: 20,
-          color: T.accent,
-          marginBottom: 16,
-        }}
-      >
-        🏅 Global Leaderboard
-      </h2>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+        <h2 style={{ fontFamily: "Oswald", fontSize: 20, color: T.accent }}>
+          🏅 Global Leaderboard
+        </h2>
+        <span style={{ fontSize: 11, color: T.muted }}>
+          {leaderboard.length} players worldwide
+        </span>
+      </div>
       <div
         style={{
           background: T.surf,
@@ -4107,7 +4180,7 @@ function LeaderboardView() {
         >
           <thead>
             <tr style={{ background: T.surf2 }}>
-              {["Rank", "Player", "Points", "Accuracy", "Exact", "Correct"].map(
+              {["Rank", "Player", "Points", "Accuracy", "Correct", "Total"].map(
                 (h) => (
                   <th
                     key={h}
@@ -4127,11 +4200,12 @@ function LeaderboardView() {
             </tr>
           </thead>
           <tbody>
-            {leaderboard.map((u, i) => {
-              const isMe = u.id === profile?.id;
+            {pageUsers.map((u, i) => {
+              const isMe = u.user_id === profile?.id || u.id === profile?.id;
+              const isTop3 = i < 3;
               return (
                 <tr
-                  key={u.id}
+                  key={u.user_id || u.id}
                   style={{
                     background: isMe
                       ? `${T.accent}10`
@@ -4145,10 +4219,10 @@ function LeaderboardView() {
                     style={{
                       padding: "9px 12px",
                       fontWeight: 700,
-                      color: i < 3 ? T.accent : T.text,
+                      color: isTop3 ? T.accent : T.text,
                     }}
                   >
-                    {medals[i] || `#${i + 1}`}
+                    {isTop3 ? medals[i] : `#${i + 1}`}
                   </td>
                   <td style={{ padding: "9px 12px" }}>
                     <div
@@ -4168,7 +4242,7 @@ function LeaderboardView() {
                           color: T.accent,
                         }}
                       >
-                        {u.username[0].toUpperCase()}
+                        {(u.username || u.profiles?.username || "U")[0].toUpperCase()}
                       </div>
                       <span
                         style={{
@@ -4176,7 +4250,7 @@ function LeaderboardView() {
                           color: isMe ? T.accent : T.text,
                         }}
                       >
-                        {u.username}
+                        {u.username || u.profiles?.username || "Anonymous"}
                         {isMe ? " (you)" : ""}
                       </span>
                     </div>
@@ -4196,10 +4270,10 @@ function LeaderboardView() {
                     {u.accuracy_pct}%
                   </td>
                   <td style={{ padding: "9px 12px" }}>
-                    {u.exact_predictions || 0}
+                    {u.correct_predictions || 0}
                   </td>
                   <td style={{ padding: "9px 12px" }}>
-                    {u.correct_predictions || 0}
+                    {u.total_predictions || 0}
                   </td>
                 </tr>
               );
@@ -4217,6 +4291,27 @@ function LeaderboardView() {
           </tbody>
         </table>
       </div>
+      {hasMore && (
+        <div style={{ textAlign: "center", marginTop: 16 }}>
+          <button
+            onClick={() => setPage((p) => p + 1)}
+            style={{
+              background: T.accent,
+              color: "#000",
+              border: "none",
+              padding: "10px 32px",
+              borderRadius: 8,
+              fontFamily: "Oswald",
+              fontWeight: 700,
+              fontSize: 13,
+              cursor: "pointer",
+              transition: "all .2s",
+            }}
+          >
+            Show More ({leaderboard.length - page * perPage} remaining)
+          </button>
+        </div>
+      )}
     </div>
   );
 }
