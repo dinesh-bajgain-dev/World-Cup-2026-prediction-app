@@ -357,11 +357,24 @@ function AuthPage({ T, dark, setDark }) {
   const [pw, setPw] = useState("");
   const [uname, setUname] = useState("");
   const [country, setCountry] = useState("");
-  const [err, setErr] = useState("");
-  const [ok, setOk] = useState(false); // true = registered, waiting for confirm
-  const [busy, setBusy] = useState(false);
-  const [resendBusy, setResendBusy] = useState(false);
+  const [err, setErr]           = useState("");
+  const [busy, setBusy]         = useState(false);
+  // OTP step state
+  const [otpStep, setOtpStep]   = useState(false); // showing OTP form?
+  const [otp, setOtp]           = useState("");
+  const [otpErr, setOtpErr]     = useState("");
+  const [otpBusy, setOtpBusy]   = useState(false);
+  const [resending, setResending] = useState(false);
   const [resendMsg, setResendMsg] = useState("");
+
+  const sendOTP = async () => {
+    const res  = await fetch("/api/send-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, username: uname }),
+    });
+    return res.json();
+  };
 
   const submit = async () => {
     setErr("");
@@ -370,32 +383,52 @@ function AuthPage({ T, dark, setDark }) {
       const { error } = await signIn(email, pw);
       if (error) setErr(error.message);
     } else {
-      if (!uname.trim()) {
-        setErr("Username required");
-        setBusy(false);
-        return;
-      }
+      if (!uname.trim()) { setErr("Username required"); setBusy(false); return; }
+
       const { data, error } = await signUp(email, pw, uname, country || null);
       if (error) {
-        // "User already registered" means the account exists but may be unconfirmed
-        if (error.message?.toLowerCase().includes("already registered")) {
-          setOk(true);
-        } else {
-          setErr(error.message);
-        }
+        setErr(error.message);
       } else {
-        setOk(true);
+        // Account created (session may or may not be returned depending on Supabase settings).
+        // Always send our own OTP so email ownership is verified.
+        const result = await sendOTP();
+        if (result.success) {
+          setOtpStep(true);
+        } else {
+          setErr(result.error || "Failed to send verification code");
+        }
       }
     }
     setBusy(false);
   };
 
-  const resend = async () => {
-    setResendBusy(true);
+  const verifyOTP = async () => {
+    setOtpErr("");
+    setOtpBusy(true);
+    const res  = await fetch("/api/verify-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, code: otp }),
+    });
+    const result = await res.json();
+    if (result.success) {
+      // OTP verified. If Supabase hasn't auto-logged them in yet (confirmation enabled),
+      // sign them in now with their password.
+      const { error: signInErr } = await signIn(email, pw);
+      if (signInErr) setOtpErr(`Verified! But sign-in failed: ${signInErr.message}`);
+      // If already logged in (confirmation disabled), onAuthStateChange handles it.
+    } else {
+      setOtpErr(result.error || "Verification failed");
+    }
+    setOtpBusy(false);
+  };
+
+  const resendOTP = async () => {
+    setResending(true);
     setResendMsg("");
-    const { error } = await supabase.auth.resend({ type: "signup", email });
-    setResendMsg(error ? `Failed: ${error.message}` : "Resent! Check your inbox and spam folder.");
-    setResendBusy(false);
+    const result = await sendOTP();
+    setResendMsg(result.success ? "New code sent!" : (result.error || "Failed to resend"));
+    setResending(false);
   };
   return (
     <div
@@ -470,29 +503,81 @@ function AuthPage({ T, dark, setDark }) {
               </button>
             ))}
           </div>
-          {ok && (
-            <div style={{ background: `${T.green}15`, border: `1px solid ${T.green}50`, borderRadius: 10, padding: "14px 16px", marginBottom: 14 }}>
-              <div style={{ color: T.green, fontWeight: 700, fontSize: 14, marginBottom: 6 }}>
-                Account created!
+          {otpStep ? (
+            /* ── OTP verification screen ────────────────────────── */
+            <div>
+              <div style={{ textAlign: "center", marginBottom: 18 }}>
+                <div style={{ fontSize: 36 }}>📧</div>
+                <div style={{ fontFamily: "Oswald", fontSize: 17, color: T.accent, marginTop: 6 }}>
+                  Check your inbox
+                </div>
+                <div style={{ fontSize: 12, color: T.muted, marginTop: 6, lineHeight: 1.6 }}>
+                  We sent a 6-digit code to<br />
+                  <strong style={{ color: T.text }}>{email}</strong>
+                </div>
               </div>
-              <div style={{ color: T.text, fontSize: 12, lineHeight: 1.6, marginBottom: 10 }}>
-                A confirmation email was sent to <strong>{email}</strong>.<br />
-                If it doesn't arrive within a minute, check your <strong>spam/junk</strong> folder.
+
+              {/* 6-digit OTP input */}
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 12, color: T.muted, marginBottom: 6, fontWeight: 600 }}>
+                  Verification Code
+                </div>
+                <input
+                  value={otp}
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  onKeyDown={(e) => e.key === "Enter" && otp.length === 6 && verifyOTP()}
+                  placeholder="000000"
+                  maxLength={6}
+                  style={{
+                    width: "100%",
+                    padding: "14px",
+                    background: T.surf2,
+                    border: `2px solid ${otpErr ? T.red : T.border}`,
+                    borderRadius: 9,
+                    color: T.accent,
+                    fontSize: 28,
+                    fontFamily: "monospace",
+                    fontWeight: 700,
+                    letterSpacing: 10,
+                    textAlign: "center",
+                    outline: "none",
+                    transition: "border-color .2s",
+                  }}
+                />
               </div>
-              <button
-                onClick={resend}
-                disabled={resendBusy}
-                style={{ background: "transparent", border: `1px solid ${T.green}`, borderRadius: 6, color: T.green, fontSize: 12, padding: "5px 12px", cursor: "pointer", opacity: resendBusy ? 0.6 : 1 }}
-              >
-                {resendBusy ? "Sending…" : "Resend confirmation email"}
-              </button>
-              {resendMsg && (
-                <div style={{ marginTop: 8, fontSize: 11, color: resendMsg.startsWith("Failed") ? T.red : T.green }}>
-                  {resendMsg}
+
+              {otpErr && (
+                <div style={{ background: `${T.red}20`, border: `1px solid ${T.red}`, borderRadius: 8, padding: "9px 13px", marginBottom: 12, color: T.red, fontSize: 12 }}>
+                  {otpErr}
                 </div>
               )}
+
+              <button
+                onClick={verifyOTP}
+                disabled={otpBusy || otp.length !== 6}
+                style={{ width: "100%", padding: 12, background: otp.length === 6 ? T.accent : T.surf2, color: otp.length === 6 ? "#000" : T.muted, borderRadius: 9, fontFamily: "Oswald", fontSize: 16, fontWeight: 700, letterSpacing: 1, marginBottom: 12, opacity: otpBusy ? 0.7 : 1, transition: "all .2s" }}
+              >
+                {otpBusy ? "Verifying…" : "Verify Email"}
+              </button>
+
+              <div style={{ textAlign: "center" }}>
+                <button
+                  onClick={resendOTP}
+                  disabled={resending}
+                  style={{ background: "transparent", color: T.muted, fontSize: 12, border: "none", cursor: "pointer", textDecoration: "underline" }}
+                >
+                  {resending ? "Sending…" : "Resend code"}
+                </button>
+                {resendMsg && (
+                  <div style={{ fontSize: 11, color: resendMsg === "New code sent!" ? T.green : T.red, marginTop: 4 }}>
+                    {resendMsg}
+                  </div>
+                )}
+              </div>
             </div>
-          )}
+          ) : (
+          /* ── Normal sign-in / register form ─────────────────── */
+          <>
           {err && (
             <div
               style={{
@@ -584,6 +669,8 @@ function AuthPage({ T, dark, setDark }) {
                 ? "Sign In"
                 : "Create Account"}
           </button>
+          </>
+          )}
         </div>
         <div style={{ textAlign: "center", marginTop: 14 }}>
           <button
