@@ -33,10 +33,13 @@ import {
   upsertKnockoutPred,
   getCommunityOdds,
   getLeaderboard,
+  getPlayers,
+  getMatches,
   adminGetAllUsers,
   adminGetUserPredictions,
   adminGetAuditLog,
   adminGetAllPredictions,
+  syncMatchesWithAPI,
 } from "../lib/supabase";
 import { useAuth, AuthProvider } from "../contexts/AuthContext";
 import {
@@ -56,60 +59,90 @@ import {
   FINAL_MATCH,
 } from "../lib/qualification";
 
-const TEAMS = {
-  Mexico: { flag: "🇲🇽", group: "A", rank: 14 },
-  "South Korea": { flag: "🇰🇷", group: "A", rank: 21 },
-  "South Africa": { flag: "🇿🇦", group: "A", rank: 63 },
-  Czechia: { flag: "🇨🇿", group: "A", rank: 37 },
-  Canada: { flag: "🇨🇦", group: "B", rank: 41 },
-  Switzerland: { flag: "🇨🇭", group: "B", rank: 16 },
-  Qatar: { flag: "🇶🇦", group: "B", rank: 37 },
-  "Bosnia-Herzegovina": { flag: "🇧🇦", group: "B", rank: 60 },
-  Brazil: { flag: "🇧🇷", group: "C", rank: 5 },
-  Morocco: { flag: "🇲🇦", group: "C", rank: 14 },
-  Scotland: { flag: "🏴󠁧󠁢󠁳󠁣󠁴󠁿", group: "C", rank: 38 },
-  Haiti: { flag: "🇭🇹", group: "C", rank: 83 },
-  USA: { flag: "🇺🇸", group: "D", rank: 13 },
-  Australia: { flag: "🇦🇺", group: "D", rank: 23 },
-  Paraguay: { flag: "🇵🇾", group: "D", rank: 59 },
-  Turkey: { flag: "🇹🇷", group: "D", rank: 40 },
-  Germany: { flag: "🇩🇪", group: "E", rank: 11 },
-  Ecuador: { flag: "🇪🇨", group: "E", rank: 37 },
-  "Ivory Coast": { flag: "🇨🇮", group: "E", rank: 48 },
-  Curacao: { flag: "🇨🇼", group: "E", rank: 76 },
-  Netherlands: { flag: "🇳🇱", group: "F", rank: 8 },
-  Japan: { flag: "🇯🇵", group: "F", rank: 18 },
-  Tunisia: { flag: "🇹🇳", group: "F", rank: 29 },
-  Sweden: { flag: "🇸🇪", group: "F", rank: 25 },
-  Belgium: { flag: "🇧🇪", group: "G", rank: 3 },
-  Iran: { flag: "🇮🇷", group: "G", rank: 24 },
-  Egypt: { flag: "🇪🇬", group: "G", rank: 37 },
-  "New Zealand": { flag: "🇳🇿", group: "G", rank: 97 },
-  Spain: { flag: "🇪🇸", group: "H", rank: 7 },
-  Uruguay: { flag: "🇺🇾", group: "H", rank: 12 },
-  "Saudi Arabia": { flag: "🇸🇦", group: "H", rank: 56 },
-  "Cape Verde": { flag: "🇨🇻", group: "H", rank: 67 },
-  France: { flag: "🇫🇷", group: "I", rank: 2 },
-  Senegal: { flag: "🇸🇳", group: "I", rank: 20 },
-  Norway: { flag: "🇳🇴", group: "I", rank: 33 },
-  Iraq: { flag: "🇮🇶", group: "I", rank: 58 },
-  Argentina: { flag: "🇦🇷", group: "J", rank: 1 },
-  Algeria: { flag: "🇩🇿", group: "J", rank: 35 },
-  Austria: { flag: "🇦🇹", group: "J", rank: 27 },
-  Jordan: { flag: "🇯🇴", group: "J", rank: 70 },
-  Portugal: { flag: "🇵🇹", group: "K", rank: 6 },
-  Colombia: { flag: "🇨🇴", group: "K", rank: 16 },
-  Uzbekistan: { flag: "🇺🇿", group: "K", rank: 60 },
-  "DR Congo": { flag: "🇨🇩", group: "K", rank: 65 },
-  England: { flag: "🏴󠁧󠁢󠁥󠁮󠁧󠁿", group: "L", rank: 4 },
-  Croatia: { flag: "🇭🇷", group: "L", rank: 9 },
-  Panama: { flag: "🇵🇦", group: "L", rank: 43 },
-  Ghana: { flag: "🇬🇭", group: "L", rank: 67 },
-  TBD: { flag: "🌍", group: null, rank: 99 },
+// ─── Dynamic Data Helpers (Replaces Hardcoded TEAMS/GROUPS) ─────────────────
+// Helper to get flag emoji from team name (simple mapping for now)
+const getTeamFlag = (teamName) => {
+  const flagMap = {
+    "Mexico": "🇲🇽", "South Korea": "🇰🇷", "South Africa": "🇿🇦", "Czechia": "🇨🇿",
+    "Canada": "🇨🇦", "Switzerland": "🇨🇭", "Qatar": "🇶🇦", "Bosnia-Herzegovina": "🇧🇦",
+    "Brazil": "🇧🇷", "Morocco": "🇲🇦", "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿", "Haiti": "🇭🇹",
+    "USA": "🇺🇸", "Australia": "🇦🇺", "Paraguay": "🇵🇾", "Turkey": "🇹🇷",
+    "Germany": "🇩🇪", "Ecuador": "🇪🇨", "Ivory Coast": "🇨🇮", "Curacao": "🇨🇼",
+    "Netherlands": "🇳🇱", "Japan": "🇯🇵", "Tunisia": "🇹🇳", "Sweden": "🇸🇪",
+    "Belgium": "🇧🇪", "Iran": "🇮🇷", "Egypt": "🇪🇬", "New Zealand": "🇳🇿",
+    "Spain": "🇪🇸", "Uruguay": "🇺🇾", "Saudi Arabia": "🇸🇦", "Cape Verde": "🇨🇻",
+    "France": "🇫🇷", "Senegal": "🇸🇳", "Norway": "🇳🇴", "Iraq": "🇮🇶",
+    "Argentina": "🇦🇷", "Algeria": "🇩🇿", "Austria": "🇦🇹", "Jordan": "🇯🇴",
+    "Portugal": "🇵🇹", "Colombia": "🇨🇴", "Uzbekistan": "🇺🇿", "DR Congo": "🇨🇩",
+    "England": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "Croatia": "🇭🇷", "Panama": "🇵🇦", "Ghana": "🇬🇭",
+    "TBD": "🌍"
+  };
+  return flagMap[teamName] || "🏳️";
 };
+
+// Helper to get FIFA rank (placeholder - would come from API in future)
+const getTeamRank = (teamName) => {
+  const rankMap = {
+    "Mexico": 14, "South Korea": 21, "South Africa": 63, "Czechia": 37,
+    "Canada": 41, "Switzerland": 16, "Qatar": 37, "Bosnia-Herzegovina": 60,
+    "Brazil": 5, "Morocco": 14, "Scotland": 38, "Haiti": 83,
+    "USA": 13, "Australia": 23, "Paraguay": 59, "Turkey": 40,
+    "Germany": 11, "Ecuador": 37, "Ivory Coast": 48, "Curacao": 76,
+    "Netherlands": 8, "Japan": 18, "Tunisia": 29, "Sweden": 25,
+    "Belgium": 3, "Iran": 24, "Egypt": 37, "New Zealand": 97,
+    "Spain": 7, "Uruguay": 12, "Saudi Arabia": 56, "Cape Verde": 67,
+    "France": 2, "Senegal": 20, "Norway": 33, "Iraq": 58,
+    "Argentina": 1, "Algeria": 35, "Austria": 27, "Jordan": 70,
+    "Portugal": 6, "Colombia": 16, "Uzbekistan": 60, "DR Congo": 65,
+    "England": 4, "Croatia": 9, "Panama": 43, "Ghana": 67
+  };
+  return rankMap[teamName] || 99;
+};
+
+// Helper to get venue name
+const getVenueName = (venue) => {
+  const venueMap = {
+    "Azteca": "Estadio Azteca", "ATT": "AT&T Stadium", "BMO": "BMO Field",
+    "BCPlace": "BC Place", "MetLife": "MetLife Stadium", "SoFi": "SoFi Stadium"
+  };
+  return venueMap[venue] || venue || "TBD";
+};
+
+// Helper to get group from team name (placeholder)
+const getTeamGroup = (teamName) => {
+  const groupMap = {
+    "Mexico": "A", "South Korea": "A", "South Africa": "A", "Czechia": "A",
+    "Canada": "B", "Switzerland": "B", "Qatar": "B", "Bosnia-Herzegovina": "B",
+    "Brazil": "C", "Morocco": "C", "Scotland": "C", "Haiti": "C",
+    "USA": "D", "Australia": "D", "Paraguay": "D", "Turkey": "D",
+    "Germany": "E", "Ecuador": "E", "Ivory Coast": "E", "Curacao": "E",
+    "Netherlands": "F", "Japan": "F", "Tunisia": "F", "Sweden": "F",
+    "Belgium": "G", "Iran": "G", "Egypt": "G", "New Zealand": "G",
+    "Spain": "H", "Uruguay": "H", "Saudi Arabia": "H", "Cape Verde": "H",
+    "France": "I", "Senegal": "I", "Norway": "I", "Iraq": "I",
+    "Argentina": "J", "Algeria": "J", "Austria": "J", "Jordan": "J",
+    "Portugal": "K", "Colombia": "K", "Uzbekistan": "K", "DR Congo": "K",
+    "England": "L", "Croatia": "L", "Panama": "L", "Ghana": "L"
+  };
+return groupMap[teamName] || null;
+};
+
+// ─── Static constants (schedule is fixed for WC 2026) ────────────────────────
+const FLAG = getTeamFlag;
+const RANK = getTeamRank;
+
+const VENUES = {
+  Azteca: "Estadio Azteca", ATT: "AT&T Stadium", BMO: "BMO Field",
+  BCPlace: "BC Place", MetLife: "MetLife Stadium", SoFi: "SoFi Stadium",
+  Arrowhead: "Arrowhead Stadium", Levi: "Levi's Stadium",
+  Lincoln: "Lincoln Financial Field", BofA: "Bank of America Stadium",
+  HardRock: "Hard Rock Stadium", Gillette: "Gillette Stadium",
+  BBVA: "Estadio BBVA", Akron: "Estadio Akron",
+};
+
 const GROUPS = {
   A: { teams: ["Mexico", "South Korea", "South Africa", "Czechia"] },
-  B: { teams: ["Canada", "Switzerland", "Qatar", "Bosnia-Herzegovina"] },
+  B: { teams: ["Canada", "Bosnia-Herzegovina", "Qatar", "Switzerland"] },
   C: { teams: ["Brazil", "Morocco", "Scotland", "Haiti"] },
   D: { teams: ["USA", "Australia", "Paraguay", "Turkey"] },
   E: { teams: ["Germany", "Ecuador", "Ivory Coast", "Curacao"] },
@@ -121,698 +154,108 @@ const GROUPS = {
   K: { teams: ["Portugal", "Colombia", "Uzbekistan", "DR Congo"] },
   L: { teams: ["England", "Croatia", "Panama", "Ghana"] },
 };
+
 const GF = {
   A: [
-    {
-      id: "A1",
-      home: "Mexico",
-      away: "South Africa",
-      date: "Jun 11",
-      time: "18:00",
-      venue: "Azteca",
-      matchday: 1,
-    },
-    {
-      id: "A2",
-      home: "South Korea",
-      away: "Czechia",
-      date: "Jun 12",
-      time: "15:00",
-      venue: "ATT",
-      matchday: 1,
-    },
-    {
-      id: "A3",
-      home: "Mexico",
-      away: "Czechia",
-      date: "Jun 16",
-      time: "15:00",
-      venue: "Azteca",
-      matchday: 2,
-    },
-    {
-      id: "A4",
-      home: "South Korea",
-      away: "South Africa",
-      date: "Jun 16",
-      time: "18:00",
-      venue: "ATT",
-      matchday: 2,
-    },
-    {
-      id: "A5",
-      home: "Mexico",
-      away: "South Korea",
-      date: "Jun 22",
-      time: "21:00",
-      venue: "Azteca",
-      matchday: 3,
-    },
-    {
-      id: "A6",
-      home: "South Africa",
-      away: "Czechia",
-      date: "Jun 22",
-      time: "21:00",
-      venue: "ATT",
-      matchday: 3,
-    },
+    { id:"A1", home:"Mexico",      away:"South Africa", matchday:1, match_date:"2026-06-11", match_time:"18:00", venue:"Azteca" },
+    { id:"A2", home:"South Korea", away:"Czechia",      matchday:1, match_date:"2026-06-12", match_time:"15:00", venue:"ATT" },
+    { id:"A3", home:"Mexico",      away:"Czechia",      matchday:2, match_date:"2026-06-16", match_time:"15:00", venue:"Azteca" },
+    { id:"A4", home:"South Korea", away:"South Africa", matchday:2, match_date:"2026-06-16", match_time:"18:00", venue:"ATT" },
+    { id:"A5", home:"Mexico",      away:"South Korea",  matchday:3, match_date:"2026-06-22", match_time:"21:00", venue:"Azteca" },
+    { id:"A6", home:"South Africa",away:"Czechia",      matchday:3, match_date:"2026-06-22", match_time:"21:00", venue:"ATT" },
   ],
   B: [
-    {
-      id: "B1",
-      home: "Canada",
-      away: "Bosnia-Herzegovina",
-      date: "Jun 12",
-      time: "18:00",
-      venue: "BMO",
-      matchday: 1,
-    },
-    {
-      id: "B2",
-      home: "Qatar",
-      away: "Switzerland",
-      date: "Jun 13",
-      time: "15:00",
-      venue: "BCPlace",
-      matchday: 1,
-    },
-    {
-      id: "B3",
-      home: "Canada",
-      away: "Switzerland",
-      date: "Jun 17",
-      time: "15:00",
-      venue: "BMO",
-      matchday: 2,
-    },
-    {
-      id: "B4",
-      home: "Qatar",
-      away: "Bosnia-Herzegovina",
-      date: "Jun 17",
-      time: "18:00",
-      venue: "BCPlace",
-      matchday: 2,
-    },
-    {
-      id: "B5",
-      home: "Canada",
-      away: "Qatar",
-      date: "Jun 22",
-      time: "21:00",
-      venue: "BMO",
-      matchday: 3,
-    },
-    {
-      id: "B6",
-      home: "Bosnia-Herzegovina",
-      away: "Switzerland",
-      date: "Jun 22",
-      time: "21:00",
-      venue: "BCPlace",
-      matchday: 3,
-    },
+    { id:"B1", home:"Canada",             away:"Bosnia-Herzegovina", matchday:1, match_date:"2026-06-12", match_time:"18:00", venue:"BMO" },
+    { id:"B2", home:"Qatar",              away:"Switzerland",         matchday:1, match_date:"2026-06-13", match_time:"15:00", venue:"BCPlace" },
+    { id:"B3", home:"Canada",             away:"Switzerland",         matchday:2, match_date:"2026-06-17", match_time:"15:00", venue:"BMO" },
+    { id:"B4", home:"Qatar",              away:"Bosnia-Herzegovina",  matchday:2, match_date:"2026-06-17", match_time:"18:00", venue:"BCPlace" },
+    { id:"B5", home:"Canada",             away:"Qatar",               matchday:3, match_date:"2026-06-22", match_time:"21:00", venue:"BMO" },
+    { id:"B6", home:"Bosnia-Herzegovina", away:"Switzerland",         matchday:3, match_date:"2026-06-22", match_time:"21:00", venue:"BCPlace" },
   ],
   C: [
-    {
-      id: "C1",
-      home: "Brazil",
-      away: "Morocco",
-      date: "Jun 14",
-      time: "15:00",
-      venue: "MetLife",
-      matchday: 1,
-    },
-    {
-      id: "C2",
-      home: "Haiti",
-      away: "Scotland",
-      date: "Jun 14",
-      time: "18:00",
-      venue: "SoFi",
-      matchday: 1,
-    },
-    {
-      id: "C3",
-      home: "Brazil",
-      away: "Haiti",
-      date: "Jun 18",
-      time: "15:00",
-      venue: "MetLife",
-      matchday: 2,
-    },
-    {
-      id: "C4",
-      home: "Morocco",
-      away: "Scotland",
-      date: "Jun 18",
-      time: "18:00",
-      venue: "SoFi",
-      matchday: 2,
-    },
-    {
-      id: "C5",
-      home: "Brazil",
-      away: "Scotland",
-      date: "Jun 23",
-      time: "21:00",
-      venue: "MetLife",
-      matchday: 3,
-    },
-    {
-      id: "C6",
-      home: "Morocco",
-      away: "Haiti",
-      date: "Jun 23",
-      time: "21:00",
-      venue: "SoFi",
-      matchday: 3,
-    },
+    { id:"C1", home:"Brazil",  away:"Morocco",  matchday:1, match_date:"2026-06-14", match_time:"15:00", venue:"MetLife" },
+    { id:"C2", home:"Haiti",   away:"Scotland", matchday:1, match_date:"2026-06-14", match_time:"18:00", venue:"SoFi" },
+    { id:"C3", home:"Brazil",  away:"Haiti",    matchday:2, match_date:"2026-06-18", match_time:"15:00", venue:"MetLife" },
+    { id:"C4", home:"Morocco", away:"Scotland", matchday:2, match_date:"2026-06-18", match_time:"18:00", venue:"SoFi" },
+    { id:"C5", home:"Brazil",  away:"Scotland", matchday:3, match_date:"2026-06-23", match_time:"21:00", venue:"MetLife" },
+    { id:"C6", home:"Morocco", away:"Haiti",    matchday:3, match_date:"2026-06-23", match_time:"21:00", venue:"SoFi" },
   ],
   D: [
-    {
-      id: "D1",
-      home: "USA",
-      away: "Paraguay",
-      date: "Jun 13",
-      time: "18:00",
-      venue: "MetLife",
-      matchday: 1,
-    },
-    {
-      id: "D2",
-      home: "Australia",
-      away: "Turkey",
-      date: "Jun 14",
-      time: "15:00",
-      venue: "Arrowhead",
-      matchday: 1,
-    },
-    {
-      id: "D3",
-      home: "USA",
-      away: "Australia",
-      date: "Jun 19",
-      time: "15:00",
-      venue: "SoFi",
-      matchday: 2,
-    },
-    {
-      id: "D4",
-      home: "Paraguay",
-      away: "Turkey",
-      date: "Jun 19",
-      time: "18:00",
-      venue: "MetLife",
-      matchday: 2,
-    },
-    {
-      id: "D5",
-      home: "USA",
-      away: "Turkey",
-      date: "Jun 23",
-      time: "21:00",
-      venue: "Arrowhead",
-      matchday: 3,
-    },
-    {
-      id: "D6",
-      home: "Paraguay",
-      away: "Australia",
-      date: "Jun 23",
-      time: "21:00",
-      venue: "SoFi",
-      matchday: 3,
-    },
+    { id:"D1", home:"USA",       away:"Paraguay",  matchday:1, match_date:"2026-06-13", match_time:"18:00", venue:"MetLife" },
+    { id:"D2", home:"Australia", away:"Turkey",    matchday:1, match_date:"2026-06-14", match_time:"15:00", venue:"Arrowhead" },
+    { id:"D3", home:"USA",       away:"Australia", matchday:2, match_date:"2026-06-19", match_time:"15:00", venue:"SoFi" },
+    { id:"D4", home:"Paraguay",  away:"Turkey",    matchday:2, match_date:"2026-06-19", match_time:"18:00", venue:"MetLife" },
+    { id:"D5", home:"USA",       away:"Turkey",    matchday:3, match_date:"2026-06-23", match_time:"21:00", venue:"Arrowhead" },
+    { id:"D6", home:"Paraguay",  away:"Australia", matchday:3, match_date:"2026-06-23", match_time:"21:00", venue:"SoFi" },
   ],
   E: [
-    {
-      id: "E1",
-      home: "Germany",
-      away: "Curacao",
-      date: "Jun 14",
-      time: "18:00",
-      venue: "Lincoln",
-      matchday: 1,
-    },
-    {
-      id: "E2",
-      home: "Ivory Coast",
-      away: "Ecuador",
-      date: "Jun 15",
-      time: "15:00",
-      venue: "BofA",
-      matchday: 1,
-    },
-    {
-      id: "E3",
-      home: "Germany",
-      away: "Ecuador",
-      date: "Jun 19",
-      time: "18:00",
-      venue: "Lincoln",
-      matchday: 2,
-    },
-    {
-      id: "E4",
-      home: "Ivory Coast",
-      away: "Curacao",
-      date: "Jun 20",
-      time: "15:00",
-      venue: "BofA",
-      matchday: 2,
-    },
-    {
-      id: "E5",
-      home: "Germany",
-      away: "Ivory Coast",
-      date: "Jun 24",
-      time: "21:00",
-      venue: "Lincoln",
-      matchday: 3,
-    },
-    {
-      id: "E6",
-      home: "Ecuador",
-      away: "Curacao",
-      date: "Jun 24",
-      time: "21:00",
-      venue: "BofA",
-      matchday: 3,
-    },
+    { id:"E1", home:"Germany",     away:"Curacao",   matchday:1, match_date:"2026-06-14", match_time:"18:00", venue:"Lincoln" },
+    { id:"E2", home:"Ivory Coast", away:"Ecuador",   matchday:1, match_date:"2026-06-15", match_time:"15:00", venue:"BofA" },
+    { id:"E3", home:"Germany",     away:"Ecuador",   matchday:2, match_date:"2026-06-19", match_time:"18:00", venue:"Lincoln" },
+    { id:"E4", home:"Ivory Coast", away:"Curacao",   matchday:2, match_date:"2026-06-20", match_time:"15:00", venue:"BofA" },
+    { id:"E5", home:"Germany",     away:"Ivory Coast",matchday:3,match_date:"2026-06-24", match_time:"21:00", venue:"Lincoln" },
+    { id:"E6", home:"Ecuador",     away:"Curacao",   matchday:3, match_date:"2026-06-24", match_time:"21:00", venue:"BofA" },
   ],
   F: [
-    {
-      id: "F1",
-      home: "Netherlands",
-      away: "Japan",
-      date: "Jun 14",
-      time: "21:00",
-      venue: "Levi",
-      matchday: 1,
-    },
-    {
-      id: "F2",
-      home: "Sweden",
-      away: "Tunisia",
-      date: "Jun 15",
-      time: "18:00",
-      venue: "HardRock",
-      matchday: 1,
-    },
-    {
-      id: "F3",
-      home: "Netherlands",
-      away: "Sweden",
-      date: "Jun 20",
-      time: "18:00",
-      venue: "Levi",
-      matchday: 2,
-    },
-    {
-      id: "F4",
-      home: "Japan",
-      away: "Tunisia",
-      date: "Jun 20",
-      time: "21:00",
-      venue: "HardRock",
-      matchday: 2,
-    },
-    {
-      id: "F5",
-      home: "Netherlands",
-      away: "Tunisia",
-      date: "Jun 25",
-      time: "21:00",
-      venue: "Levi",
-      matchday: 3,
-    },
-    {
-      id: "F6",
-      home: "Japan",
-      away: "Sweden",
-      date: "Jun 25",
-      time: "21:00",
-      venue: "HardRock",
-      matchday: 3,
-    },
+    { id:"F1", home:"Netherlands", away:"Japan",    matchday:1, match_date:"2026-06-14", match_time:"21:00", venue:"Levi" },
+    { id:"F2", home:"Sweden",      away:"Tunisia",  matchday:1, match_date:"2026-06-15", match_time:"18:00", venue:"HardRock" },
+    { id:"F3", home:"Netherlands", away:"Sweden",   matchday:2, match_date:"2026-06-20", match_time:"18:00", venue:"Levi" },
+    { id:"F4", home:"Japan",       away:"Tunisia",  matchday:2, match_date:"2026-06-20", match_time:"21:00", venue:"HardRock" },
+    { id:"F5", home:"Netherlands", away:"Tunisia",  matchday:3, match_date:"2026-06-25", match_time:"21:00", venue:"Levi" },
+    { id:"F6", home:"Japan",       away:"Sweden",   matchday:3, match_date:"2026-06-25", match_time:"21:00", venue:"HardRock" },
   ],
   G: [
-    {
-      id: "G1",
-      home: "Belgium",
-      away: "Egypt",
-      date: "Jun 15",
-      time: "21:00",
-      venue: "Gillette",
-      matchday: 1,
-    },
-    {
-      id: "G2",
-      home: "Iran",
-      away: "New Zealand",
-      date: "Jun 16",
-      time: "15:00",
-      venue: "Azteca",
-      matchday: 1,
-    },
-    {
-      id: "G3",
-      home: "Belgium",
-      away: "Iran",
-      date: "Jun 21",
-      time: "15:00",
-      venue: "Gillette",
-      matchday: 2,
-    },
-    {
-      id: "G4",
-      home: "Egypt",
-      away: "New Zealand",
-      date: "Jun 21",
-      time: "18:00",
-      venue: "Azteca",
-      matchday: 2,
-    },
-    {
-      id: "G5",
-      home: "Belgium",
-      away: "New Zealand",
-      date: "Jun 26",
-      time: "21:00",
-      venue: "Gillette",
-      matchday: 3,
-    },
-    {
-      id: "G6",
-      home: "Egypt",
-      away: "Iran",
-      date: "Jun 26",
-      time: "21:00",
-      venue: "Azteca",
-      matchday: 3,
-    },
+    { id:"G1", home:"Belgium", away:"Egypt",       matchday:1, match_date:"2026-06-15", match_time:"21:00", venue:"Gillette" },
+    { id:"G2", home:"Iran",    away:"New Zealand", matchday:1, match_date:"2026-06-16", match_time:"15:00", venue:"Azteca" },
+    { id:"G3", home:"Belgium", away:"Iran",        matchday:2, match_date:"2026-06-21", match_time:"15:00", venue:"Gillette" },
+    { id:"G4", home:"Egypt",   away:"New Zealand", matchday:2, match_date:"2026-06-21", match_time:"18:00", venue:"Azteca" },
+    { id:"G5", home:"Belgium", away:"New Zealand", matchday:3, match_date:"2026-06-26", match_time:"21:00", venue:"Gillette" },
+    { id:"G6", home:"Egypt",   away:"Iran",        matchday:3, match_date:"2026-06-26", match_time:"21:00", venue:"Azteca" },
   ],
   H: [
-    {
-      id: "H1",
-      home: "Spain",
-      away: "Cape Verde",
-      date: "Jun 15",
-      time: "15:00",
-      venue: "BBVA",
-      matchday: 1,
-    },
-    {
-      id: "H2",
-      home: "Saudi Arabia",
-      away: "Uruguay",
-      date: "Jun 16",
-      time: "18:00",
-      venue: "Akron",
-      matchday: 1,
-    },
-    {
-      id: "H3",
-      home: "Spain",
-      away: "Saudi Arabia",
-      date: "Jun 20",
-      time: "21:00",
-      venue: "BBVA",
-      matchday: 2,
-    },
-    {
-      id: "H4",
-      home: "Uruguay",
-      away: "Cape Verde",
-      date: "Jun 21",
-      time: "21:00",
-      venue: "Akron",
-      matchday: 2,
-    },
-    {
-      id: "H5",
-      home: "Spain",
-      away: "Uruguay",
-      date: "Jun 26",
-      time: "21:00",
-      venue: "BBVA",
-      matchday: 3,
-    },
-    {
-      id: "H6",
-      home: "Cape Verde",
-      away: "Saudi Arabia",
-      date: "Jun 26",
-      time: "21:00",
-      venue: "Akron",
-      matchday: 3,
-    },
+    { id:"H1", home:"Spain",        away:"Cape Verde",  matchday:1, match_date:"2026-06-15", match_time:"15:00", venue:"BBVA" },
+    { id:"H2", home:"Saudi Arabia", away:"Uruguay",     matchday:1, match_date:"2026-06-16", match_time:"18:00", venue:"Akron" },
+    { id:"H3", home:"Spain",        away:"Saudi Arabia",matchday:2, match_date:"2026-06-20", match_time:"21:00", venue:"BBVA" },
+    { id:"H4", home:"Uruguay",      away:"Cape Verde",  matchday:2, match_date:"2026-06-21", match_time:"21:00", venue:"Akron" },
+    { id:"H5", home:"Spain",        away:"Uruguay",     matchday:3, match_date:"2026-06-26", match_time:"21:00", venue:"BBVA" },
+    { id:"H6", home:"Cape Verde",   away:"Saudi Arabia",matchday:3, match_date:"2026-06-26", match_time:"21:00", venue:"Akron" },
   ],
   I: [
-    {
-      id: "I1",
-      home: "France",
-      away: "Norway",
-      date: "Jun 16",
-      time: "21:00",
-      venue: "ATT",
-      matchday: 1,
-    },
-    {
-      id: "I2",
-      home: "Senegal",
-      away: "Iraq",
-      date: "Jun 17",
-      time: "15:00",
-      venue: "Arrowhead",
-      matchday: 1,
-    },
-    {
-      id: "I3",
-      home: "France",
-      away: "Senegal",
-      date: "Jun 21",
-      time: "21:00",
-      venue: "ATT",
-      matchday: 2,
-    },
-    {
-      id: "I4",
-      home: "Norway",
-      away: "Iraq",
-      date: "Jun 22",
-      time: "15:00",
-      venue: "Arrowhead",
-      matchday: 2,
-    },
-    {
-      id: "I5",
-      home: "France",
-      away: "Iraq",
-      date: "Jun 27",
-      time: "21:00",
-      venue: "ATT",
-      matchday: 3,
-    },
-    {
-      id: "I6",
-      home: "Norway",
-      away: "Senegal",
-      date: "Jun 27",
-      time: "21:00",
-      venue: "Arrowhead",
-      matchday: 3,
-    },
+    { id:"I1", home:"France",  away:"Norway",  matchday:1, match_date:"2026-06-16", match_time:"21:00", venue:"ATT" },
+    { id:"I2", home:"Senegal", away:"Iraq",    matchday:1, match_date:"2026-06-17", match_time:"15:00", venue:"Arrowhead" },
+    { id:"I3", home:"France",  away:"Senegal", matchday:2, match_date:"2026-06-21", match_time:"21:00", venue:"ATT" },
+    { id:"I4", home:"Norway",  away:"Iraq",    matchday:2, match_date:"2026-06-22", match_time:"15:00", venue:"Arrowhead" },
+    { id:"I5", home:"France",  away:"Iraq",    matchday:3, match_date:"2026-06-27", match_time:"21:00", venue:"ATT" },
+    { id:"I6", home:"Norway",  away:"Senegal", matchday:3, match_date:"2026-06-27", match_time:"21:00", venue:"Arrowhead" },
   ],
   J: [
-    {
-      id: "J1",
-      home: "Argentina",
-      away: "Algeria",
-      date: "Jun 16",
-      time: "21:00",
-      venue: "MetLife",
-      matchday: 1,
-    },
-    {
-      id: "J2",
-      home: "Austria",
-      away: "Jordan",
-      date: "Jun 17",
-      time: "18:00",
-      venue: "Lincoln",
-      matchday: 1,
-    },
-    {
-      id: "J3",
-      home: "Argentina",
-      away: "Austria",
-      date: "Jun 22",
-      time: "18:00",
-      venue: "MetLife",
-      matchday: 2,
-    },
-    {
-      id: "J4",
-      home: "Algeria",
-      away: "Jordan",
-      date: "Jun 22",
-      time: "15:00",
-      venue: "Lincoln",
-      matchday: 2,
-    },
-    {
-      id: "J5",
-      home: "Argentina",
-      away: "Jordan",
-      date: "Jun 27",
-      time: "21:00",
-      venue: "MetLife",
-      matchday: 3,
-    },
-    {
-      id: "J6",
-      home: "Austria",
-      away: "Algeria",
-      date: "Jun 27",
-      time: "21:00",
-      venue: "Lincoln",
-      matchday: 3,
-    },
+    { id:"J1", home:"Argentina", away:"Algeria",   matchday:1, match_date:"2026-06-16", match_time:"21:00", venue:"MetLife" },
+    { id:"J2", home:"Austria",   away:"Jordan",    matchday:1, match_date:"2026-06-17", match_time:"18:00", venue:"Lincoln" },
+    { id:"J3", home:"Argentina", away:"Austria",   matchday:2, match_date:"2026-06-22", match_time:"18:00", venue:"MetLife" },
+    { id:"J4", home:"Algeria",   away:"Jordan",    matchday:2, match_date:"2026-06-22", match_time:"15:00", venue:"Lincoln" },
+    { id:"J5", home:"Argentina", away:"Jordan",    matchday:3, match_date:"2026-06-27", match_time:"21:00", venue:"MetLife" },
+    { id:"J6", home:"Austria",   away:"Algeria",   matchday:3, match_date:"2026-06-27", match_time:"21:00", venue:"Lincoln" },
   ],
   K: [
-    {
-      id: "K1",
-      home: "Portugal",
-      away: "DR Congo",
-      date: "Jun 17",
-      time: "21:00",
-      venue: "SoFi",
-      matchday: 1,
-    },
-    {
-      id: "K2",
-      home: "Colombia",
-      away: "Uzbekistan",
-      date: "Jun 18",
-      time: "15:00",
-      venue: "BofA",
-      matchday: 1,
-    },
-    {
-      id: "K3",
-      home: "Portugal",
-      away: "Uzbekistan",
-      date: "Jun 22",
-      time: "21:00",
-      venue: "SoFi",
-      matchday: 2,
-    },
-    {
-      id: "K4",
-      home: "Colombia",
-      away: "DR Congo",
-      date: "Jun 23",
-      time: "15:00",
-      venue: "BofA",
-      matchday: 2,
-    },
-    {
-      id: "K5",
-      home: "Portugal",
-      away: "Colombia",
-      date: "Jun 28",
-      time: "21:00",
-      venue: "SoFi",
-      matchday: 3,
-    },
-    {
-      id: "K6",
-      home: "DR Congo",
-      away: "Uzbekistan",
-      date: "Jun 28",
-      time: "21:00",
-      venue: "BofA",
-      matchday: 3,
-    },
+    { id:"K1", home:"Portugal", away:"DR Congo",   matchday:1, match_date:"2026-06-17", match_time:"21:00", venue:"SoFi" },
+    { id:"K2", home:"Colombia", away:"Uzbekistan", matchday:1, match_date:"2026-06-18", match_time:"15:00", venue:"BofA" },
+    { id:"K3", home:"Portugal", away:"Uzbekistan", matchday:2, match_date:"2026-06-22", match_time:"21:00", venue:"SoFi" },
+    { id:"K4", home:"Colombia", away:"DR Congo",   matchday:2, match_date:"2026-06-23", match_time:"15:00", venue:"BofA" },
+    { id:"K5", home:"Portugal", away:"Colombia",   matchday:3, match_date:"2026-06-28", match_time:"21:00", venue:"SoFi" },
+    { id:"K6", home:"DR Congo", away:"Uzbekistan", matchday:3, match_date:"2026-06-28", match_time:"21:00", venue:"BofA" },
   ],
   L: [
-    {
-      id: "L1",
-      home: "England",
-      away: "Croatia",
-      date: "Jun 18",
-      time: "21:00",
-      venue: "HardRock",
-      matchday: 1,
-    },
-    {
-      id: "L2",
-      home: "Panama",
-      away: "Ghana",
-      date: "Jun 18",
-      time: "18:00",
-      venue: "Gillette",
-      matchday: 1,
-    },
-    {
-      id: "L3",
-      home: "England",
-      away: "Ghana",
-      date: "Jun 23",
-      time: "18:00",
-      venue: "HardRock",
-      matchday: 2,
-    },
-    {
-      id: "L4",
-      home: "Panama",
-      away: "Croatia",
-      date: "Jun 23",
-      time: "15:00",
-      venue: "Gillette",
-      matchday: 2,
-    },
-    {
-      id: "L5",
-      home: "England",
-      away: "Panama",
-      date: "Jun 28",
-      time: "21:00",
-      venue: "HardRock",
-      matchday: 3,
-    },
-    {
-      id: "L6",
-      home: "Croatia",
-      away: "Ghana",
-      date: "Jun 28",
-      time: "21:00",
-      venue: "Gillette",
-      matchday: 3,
-    },
+    { id:"L1", home:"England", away:"Croatia",  matchday:1, match_date:"2026-06-18", match_time:"21:00", venue:"HardRock" },
+    { id:"L2", home:"Panama",  away:"Ghana",    matchday:1, match_date:"2026-06-18", match_time:"18:00", venue:"Gillette" },
+    { id:"L3", home:"England", away:"Ghana",    matchday:2, match_date:"2026-06-23", match_time:"18:00", venue:"HardRock" },
+    { id:"L4", home:"Panama",  away:"Croatia",  matchday:2, match_date:"2026-06-23", match_time:"15:00", venue:"Gillette" },
+    { id:"L5", home:"England", away:"Panama",   matchday:3, match_date:"2026-06-28", match_time:"21:00", venue:"HardRock" },
+    { id:"L6", home:"Croatia", away:"Ghana",    matchday:3, match_date:"2026-06-28", match_time:"21:00", venue:"Gillette" },
   ],
 };
-const VENUES = {
-  MetLife: "MetLife Stadium, NJ",
-  ATT: "AT&T Stadium, TX",
-  SoFi: "SoFi Stadium, CA",
-  Arrowhead: "Arrowhead Stadium, MO",
-  Levi: "Levi's Stadium, CA",
-  Lincoln: "Lincoln Financial, PA",
-  BofA: "Bank of America Stadium, NC",
-  HardRock: "Hard Rock Stadium, FL",
-  Gillette: "Gillette Stadium, MA",
-  BMO: "BMO Field, Toronto",
-  BCPlace: "BC Place, Vancouver",
-  Azteca: "Estadio Azteca, MEX",
-  BBVA: "Estadio BBVA, MTY",
-  Akron: "Estadio Akron, GDL",
-};
-const FLAG = (t) => TEAMS[t]?.flag || "🌍";
-const RANK = (t) => TEAMS[t]?.rank || 99;
+
+// ─── Dynamic Data Loading ─────────────────────────────────────────────────────
+// matches state is loaded from DB in UserApp; static GF/GROUPS used for display
 function mkT(dm) {
   return {
     bg: dm ? "#06090f" : "#eef1f8",
@@ -889,11 +332,31 @@ function IField({ label, val, set, T, type = "text", ph = "" }) {
     </div>
   );
 }
+const COUNTRY_LIST = [
+  "Afghanistan","Albania","Algeria","Andorra","Angola","Argentina","Armenia","Australia","Austria",
+  "Azerbaijan","Bahrain","Bangladesh","Belarus","Belgium","Bolivia","Bosnia and Herzegovina",
+  "Botswana","Brazil","Bulgaria","Burkina Faso","Cambodia","Cameroon","Canada","Cape Verde",
+  "Chile","China","Colombia","Croatia","Cuba","Czechia","DR Congo","Denmark","Ecuador","Egypt",
+  "El Salvador","Estonia","Ethiopia","Finland","France","Georgia","Germany","Ghana","Greece",
+  "Guatemala","Guinea","Haiti","Honduras","Hungary","Iceland","India","Indonesia","Iran","Iraq",
+  "Ireland","Israel","Italy","Ivory Coast","Jamaica","Japan","Jordan","Kazakhstan","Kenya",
+  "Kuwait","Latvia","Lebanon","Libya","Lithuania","Luxembourg","Madagascar","Malaysia","Mali",
+  "Malta","Mexico","Moldova","Mongolia","Montenegro","Morocco","Mozambique","Myanmar","Nepal",
+  "Netherlands","New Zealand","Nicaragua","Niger","Nigeria","North Korea","North Macedonia",
+  "Norway","Oman","Pakistan","Palestine","Panama","Paraguay","Peru","Philippines","Poland",
+  "Portugal","Qatar","Romania","Russia","Rwanda","Saudi Arabia","Scotland","Senegal","Serbia",
+  "Sierra Leone","Singapore","Slovakia","Slovenia","Somalia","South Africa","South Korea",
+  "Spain","Sri Lanka","Sudan","Sweden","Switzerland","Syria","Tanzania","Thailand","Tunisia",
+  "Turkey","Uganda","Ukraine","United Arab Emirates","United Kingdom","USA","Uruguay","Uzbekistan",
+  "Venezuela","Vietnam","Yemen","Zambia","Zimbabwe"
+];
+
 function AuthPage({ T, dark, setDark }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [uname, setUname] = useState("");
+  const [country, setCountry] = useState("");
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
   const [busy, setBusy] = useState(false);
@@ -909,7 +372,7 @@ function AuthPage({ T, dark, setDark }) {
         setBusy(false);
         return;
       }
-      const { error } = await signUp(email, pw, uname);
+      const { error } = await signUp(email, pw, uname, country || null);
       if (error) setErr(error.message);
       else setOk("Check your email to confirm!");
     }
@@ -1019,13 +482,41 @@ function AuthPage({ T, dark, setDark }) {
             </div>
           )}
           {mode === "register" && (
-            <IField
-              label="Username"
-              val={uname}
-              set={setUname}
-              T={T}
-              ph="yourname"
-            />
+            <>
+              <IField
+                label="Username"
+                val={uname}
+                set={setUname}
+                T={T}
+                ph="yourname"
+              />
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 12, color: T.muted, marginBottom: 5, fontWeight: 600 }}>
+                  Country <span style={{ color: T.muted, fontWeight: 400 }}>(optional)</span>
+                </div>
+                <select
+                  value={country}
+                  onChange={(e) => setCountry(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "9px 11px",
+                    background: T.surf2,
+                    border: `1px solid ${T.border}`,
+                    borderRadius: 8,
+                    color: country ? T.text : T.muted,
+                    fontSize: 13,
+                    fontFamily: "Rajdhani,sans-serif",
+                    outline: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="">Select your country…</option>
+                  {COUNTRY_LIST.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+            </>
           )}
           <IField
             label="Email"
@@ -1089,7 +580,11 @@ function AuthPage({ T, dark, setDark }) {
 // ─── localStorage cache helpers ──────────────────────────────────────────────
 const LS_KEY = "wc2026_cache";
 function lsRead() {
-  try { return JSON.parse(localStorage.getItem(LS_KEY) || "null") || {}; } catch { return {}; }
+  try {
+    return JSON.parse(localStorage.getItem(LS_KEY) || "null") || {};
+  } catch {
+    return {};
+  }
 }
 function lsWrite(patch) {
   try {
@@ -1109,66 +604,95 @@ function UserApp({ T, dark, setDark }) {
   const [sfLosers, setSFL] = useState({});
   const [matchPreds, setMP] = useState(() => lsRead().matchPreds || {});
   const [leaderboard, setLB] = useState([]);
+  const [matches, setMatches] = useState([]); // Dynamic matches from DB
   const [toast, setToast] = useState(null);
   const [saving, setSaving] = useState(false);
-  const qual = useMemo(() => {
-    const baseQual = deriveQualification(GROUPS, GF, groupResults);
-    const allStandings = Object.entries(baseQual.allStandings || {}).reduce(
-      (acc, [g, rows]) => {
-        const picks = groupQuals[g];
-        if (!picks?.first && !picks?.second) {
-          acc[g] = rows;
-          return acc;
-        }
-        const ordered = [];
-        const seen = new Set();
-        [picks?.first, picks?.second].filter(Boolean).forEach((team) => {
-          const match = rows.find((row) => row.team === team);
-          if (match && !seen.has(team)) {
-            seen.add(team);
-            ordered.push({ ...match, predictedQualifier: true });
-          }
-        });
-        rows.forEach((row) => {
-          if (!seen.has(row.team)) ordered.push(row);
-        });
-        acc[g] = ordered.map((row, index) => ({
-          ...row,
-          displayPosition: index + 1,
-        }));
-        return acc;
-      },
-      {},
-    );
-    return { ...baseQual, allStandings };
-  }, [groupResults, groupQuals]);
-  const resolve = (slot) => resolveSlot(slot, qual, knockouts, sfLosers);
+  const [syncing, setSyncing] = useState(false);
+
+  // ─── 1. Trigger API Sync on Mount (if API key exists) ───────────────────────
+  useEffect(() => {
+    const triggerSync = async () => {
+      const apiKey = import.meta.env.VITE_API_FOOTBALL_KEY;
+      if (!apiKey) {
+        console.log("⚠️ API-Football key not set. Using cached data.");
+        return;
+      }
+      if (!profile) return;
+      
+      setSyncing(true);
+      const result = await syncMatchesWithAPI();
+      setSyncing(false);
+      
+      if (result.success) {
+        showToast(`✅ Synced ${result.synced} matches from API-Football`, "success");
+      } else {
+        console.error("Sync failed:", result.error);
+        showToast("⚠️ Could not sync matches. Using cached data.", "error");
+      }
+    };
+    triggerSync();
+  }, [profile]);
+
+  // ─── 2. Fetch Matches from Database ─────────────────────────────────────────
   useEffect(() => {
     if (!profile) return;
+    loadMatches();
     loadAll();
-    getLeaderboard(100).then(({ data }) => setLB(data || []));
+    getLeaderboard(500).then(({ data }) => setLB(formatLeaderboard(data || [])));
+    
+    // Auto-refresh leaderboard every 60s
+    const lbInterval = setInterval(() => {
+      getLeaderboard(500).then(({ data }) => setLB(formatLeaderboard(data || [])));
+    }, 60000);
+    
+    // Auto-refresh matches every 2min
+    const matchInterval = setInterval(() => {
+      loadMatches();
+      loadAll();
+    }, 120000);
+    
+    return () => {
+      clearInterval(lbInterval);
+      clearInterval(matchInterval);
+    };
   }, [profile]);
+
+  const loadMatches = async () => {
+    const { data, error } = await getMatches();
+    if (error) {
+      console.error("Failed to load matches:", error);
+      return;
+    }
+    setMatches(data || []);
+  };
+
+  const formatLeaderboard = (data) =>
+    data.map((u, i) => ({
+      ...u,
+      rank: i + 1,
+      accuracy_pct: u.total_predictions > 0
+        ? Math.round((u.correct_predictions || 0) / (u.total_predictions || 1) * 100)
+        : 0,
+      total_predictions: u.total_predictions || 0,
+    }));
+
+  // ─── 3. Load User Predictions (merge with DB data) ──────────────────────────
   const loadAll = async () => {
-    // ── Step 1: Hydrate instantly from localStorage (zero latency) ───────────
     const cached = lsRead();
     if (cached.matchPreds) setMP(cached.matchPreds);
     if (cached.groupResults) setGR(cached.groupResults);
     if (cached.groupQuals) setGQ(cached.groupQuals);
     if (cached.knockouts) setKO(cached.knockouts);
-    // ── Step 2: Fetch from Supabase and merge with existing state ─────────────
-    // IMPORTANT: Use merge (not replace) to avoid race condition where
-    // Supabase stale data overwrites predictions the user made between
-    // step 1 and step 2 completing.
+
     const [mp, gq, kp] = await Promise.all([
       getUserPredictions(profile.id),
       getUserGroupQuals(profile.id),
       getUserKnockoutPreds(profile.id),
     ]);
-    // Build maps from Supabase data, then merge with existing state
-    // (existing user-made changes take priority over Supabase stale data)
+
     const grMap = {};
     mp.data?.forEach((p) => {
-      const g = p.match_id[0];
+      const g = p.match_id.substring(0, 1); // Extract group from match ID
       if (!grMap[g]) grMap[g] = {};
       grMap[g][p.match_id] = {
         homeScore: p.predicted_home_score,
@@ -1182,6 +706,7 @@ function UserApp({ T, dark, setDark }) {
       });
       return merged;
     });
+
     const qualMap = {};
     gq.data?.forEach((q) => {
       qualMap[q.group_id] = {
@@ -1190,17 +715,19 @@ function UserApp({ T, dark, setDark }) {
       };
     });
     setGQ((prev) => ({ ...qualMap, ...prev }));
+
     const mpMap = {};
     mp.data?.forEach((p) => {
       mpMap[p.match_id] = p;
     });
     setMP((prev) => ({ ...mpMap, ...prev }));
+
     const koMap = {};
     kp.data?.forEach((p) => {
       koMap[`${p.stage}-${p.slot_index}`] = p.predicted_winner;
     });
     setKO((prev) => ({ ...koMap, ...prev }));
-    // ── Step 3: Merge Supabase data into localStorage (preserve user changes) ─
+
     const currentCache = lsRead();
     lsWrite({
       groupResults: { ...grMap, ...(currentCache.groupResults || {}) },
@@ -1209,58 +736,75 @@ function UserApp({ T, dark, setDark }) {
       knockouts: { ...koMap, ...(currentCache.knockouts || {}) },
     });
   };
-  const showToast = (msg, type = "success") => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3500);
+const showToast = (msg, type = "success") => {
+  setToast({ msg, type });
+  setTimeout(() => setToast(null), 3500);
+};
+
+const savePrediction = async (gId, matchId, hs, as) => {
+  if (!profile) return;
+  setSaving(true);
+  
+  // Find match from dynamic matches array
+  const match = matches.find((m) => m.id === matchId);
+  const pred = hs > as ? "home" : as > hs ? "away" : "draw";
+  
+  // Calculate odds based on actual match data
+  const odds = calculateMatchOdds(
+    match?.home_team || "TBD",
+    match?.away_team || "TBD",
+    pred,
+    "group",
+  );
+  
+  // ── Optimistic update: persist to localStorage immediately ────────────────
+  const optimistic = {
+    user_id: profile.id,
+    match_id: matchId,
+    predicted_home_score: hs,
+    predicted_away_score: as,
+    predicted_winner: pred,
+    stake_amount: 10,
+    odds_at_submission: odds.selected,
+    potential_payout: parseFloat((10 * odds.selected).toFixed(2)),
   };
-  const savePrediction = async (gId, matchId, hs, as) => {
-    if (!profile) return;
-    setSaving(true);
-    const fix = (GF[gId] || []).find((f) => f.id === matchId);
-    const pred = hs > as ? "home" : as > hs ? "away" : "draw";
-    const odds = calculateMatchOdds(
-      fix?.home || "TBD",
-      fix?.away || "TBD",
-      pred,
-      "group",
-    );
-    // ── Optimistic update: persist to localStorage immediately ────────────────
-    const optimistic = {
-      user_id: profile.id,
-      match_id: matchId,
-      predicted_home_score: hs,
-      predicted_away_score: as,
-      predicted_winner: pred,
-      stake_amount: 10,
-      odds_at_submission: odds.selected,
-      potential_payout: parseFloat((10 * odds.selected).toFixed(2)),
+  setGR((prev) => {
+    const next = {
+      ...prev,
+      [gId]: {
+        ...(prev[gId] || {}),
+        [matchId]: { homeScore: hs, awayScore: as },
+      },
     };
-    setGR((prev) => {
-      const next = { ...prev, [gId]: { ...(prev[gId] || {}), [matchId]: { homeScore: hs, awayScore: as } } };
-      lsWrite({ groupResults: next });
-      return next;
-    });
-    setMP((prev) => {
-      const next = { ...prev, [matchId]: optimistic };
-      lsWrite({ matchPreds: next });
-      return next;
-    });
-    // ── Supabase persist (best-effort, non-blocking) ──────────────────────────
-    const { data, error } = await upsertPrediction(optimistic);
-    if (error) {
-      showToast(error.message, "error");
-      setSaving(false);
-      return;
-    }
-    const savedPrediction = data || optimistic;
-    setMP((prev) => {
-      const next = { ...prev, [matchId]: savedPrediction };
-      lsWrite({ matchPreds: next });
-      return next;
-    });
+    lsWrite({ groupResults: next });
+    return next;
+  });
+  setMP((prev) => {
+    const next = { ...prev, [matchId]: optimistic };
+    lsWrite({ matchPreds: next });
+    return next;
+  });
+  
+  // ── Supabase persist (with server-side lock check) ─────────────────────────
+  const { data, error } = await upsertPrediction(optimistic);
+  if (error) {
+    showToast(error.message, "error");
     setSaving(false);
-    return savedPrediction;
-  };
+    // Revert optimistic update
+    loadAll();
+    return;
+  }
+  
+  const savedPrediction = data || optimistic;
+  setMP((prev) => {
+    const next = { ...prev, [matchId]: savedPrediction };
+    lsWrite({ matchPreds: next });
+    return next;
+  });
+  
+  setSaving(false);
+  return savedPrediction;
+};
   const saveGroupQual = async (groupId, first, second) => {
     if (!profile) return;
     // ── Optimistic update ─────────────────────────────────────────────────────
@@ -1281,11 +825,17 @@ function UserApp({ T, dark, setDark }) {
       showToast(error.message, "error");
       return;
     }
-    const savedQual = data || { predicted_first: first, predicted_second: second };
+    const savedQual = data || {
+      predicted_first: first,
+      predicted_second: second,
+    };
     setGQ((prev) => {
       const next = {
         ...prev,
-        [groupId]: { first: savedQual.predicted_first, second: savedQual.predicted_second },
+        [groupId]: {
+          first: savedQual.predicted_first,
+          second: savedQual.predicted_second,
+        },
       };
       lsWrite({ groupQuals: next });
       return next;
@@ -1302,7 +852,8 @@ function UserApp({ T, dark, setDark }) {
     if (stage === "sf") {
       const b = SF_BRACKET[idx];
       if (b) {
-        const h = resolve(b.homeSlot), a = resolve(b.awaySlot);
+        const h = resolve(b.homeSlot),
+          a = resolve(b.awaySlot);
         setSFL((prev) => ({ ...prev, [`sf-${idx}`]: winner === h ? a : h }));
       }
     }
@@ -1316,6 +867,16 @@ function UserApp({ T, dark, setDark }) {
     });
     if (error) showToast(error.message, "error");
   };
+  // Derive qualification state from user's group predictions
+  const qual = useMemo(
+    () => deriveQualification(GROUPS, GF, groupResults),
+    [groupResults],
+  );
+  const resolve = useCallback(
+    (slot) => resolveSlot(slot, qual, knockouts, sfLosers),
+    [qual, knockouts, sfLosers],
+  );
+
   const totalPreds = Object.keys(matchPreds).length;
   const accMul = getAccumulatorMultiplier(totalPreds);
   const nav = [
@@ -1343,6 +904,7 @@ function UserApp({ T, dark, setDark }) {
     sfLosers,
     qual,
     resolve,
+    matches,
     savePrediction,
     saveGroupQual,
     saveKO,
@@ -1888,7 +1450,7 @@ function HomeView() {
 }
 
 function GroupPredictions() {
-  const { T, matchPreds, groupQuals, saveGroupQual, savePrediction } = useU();
+  const { T, matchPreds, groupQuals, saveGroupQual, savePrediction, matches } = useU();
   const [ag, setAg] = useState("A");
   // Derive qualifier picks directly from context — no local state race condition
   const savedFirst = groupQuals[ag]?.first || "";
@@ -1898,7 +1460,7 @@ function GroupPredictions() {
   const [secondPick, setSecondPick] = useState(savedSecond);
   const [af, setAf] = useState(0);
   const [qualSaveStatus, setQualSaveStatus] = useState(
-    savedFirst && savedSecond ? "saved" : "idle"
+    savedFirst && savedSecond ? "saved" : "idle",
   );
   const qualDebounceRef = useRef(null);
   const qualSavedTimerRef = useRef(null);
@@ -1914,52 +1476,105 @@ function GroupPredictions() {
   }, [ag, groupQuals[ag]?.first, groupQuals[ag]?.second]);
 
   // Debounced auto-save for qualifier picks
-  const triggerQualAutoSave = useCallback((f, s) => {
-    if (!f || !s || f === s) return;
-    qualDirtyRef.current = true;
-    qualPendingRef.current = { first: f, second: s };
-    setQualSaveStatus("dirty");
-    clearTimeout(qualDebounceRef.current);
-    clearTimeout(qualSavedTimerRef.current);
-    qualDebounceRef.current = setTimeout(async () => {
-      qualDirtyRef.current = false;
-      setQualSaveStatus("saving");
-      await saveGroupQual(ag, f, s);
-      setQualSaveStatus("saved");
-      qualSavedTimerRef.current = setTimeout(() => setQualSaveStatus("idle"), 3000);
-    }, 800);
-  }, [ag, saveGroupQual]);
+  const triggerQualAutoSave = useCallback(
+    (f, s) => {
+      if (!f || !s || f === s) return;
+      qualDirtyRef.current = true;
+      qualPendingRef.current = { first: f, second: s };
+      setQualSaveStatus("dirty");
+      clearTimeout(qualDebounceRef.current);
+      clearTimeout(qualSavedTimerRef.current);
+      qualDebounceRef.current = setTimeout(async () => {
+        qualDirtyRef.current = false;
+        setQualSaveStatus("saving");
+        await saveGroupQual(ag, f, s);
+        setQualSaveStatus("saved");
+        qualSavedTimerRef.current = setTimeout(
+          () => setQualSaveStatus("idle"),
+          3000,
+        );
+      }, 800);
+    },
+    [ag, saveGroupQual],
+  );
 
   // Flush pending qualifier save on unmount
-  useEffect(() => () => {
-    clearTimeout(qualDebounceRef.current);
-    clearTimeout(qualSavedTimerRef.current);
-    if (qualDirtyRef.current) {
-      const { first, second } = qualPendingRef.current;
-      if (first && second && first !== second) {
-        saveGroupQual(ag, first, second);
+  useEffect(
+    () => () => {
+      clearTimeout(qualDebounceRef.current);
+      clearTimeout(qualSavedTimerRef.current);
+      if (qualDirtyRef.current) {
+        const { first, second } = qualPendingRef.current;
+        if (first && second && first !== second) {
+          saveGroupQual(ag, first, second);
+        }
       }
-    }
-  }, [ag, saveGroupQual]);
+    },
+    [ag, saveGroupQual],
+  );
 
   const QualSaveIndicator = () => {
     if (qualSaveStatus === "saving")
       return (
-        <span style={{ fontSize: 11, color: T.muted, display: "flex", alignItems: "center", gap: 5 }}>
-          <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", border: `2px solid ${T.accent}`, borderTopColor: "transparent", animation: "spin .7s linear infinite" }} />
+        <span
+          style={{
+            fontSize: 11,
+            color: T.muted,
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+          }}
+        >
+          <span
+            style={{
+              display: "inline-block",
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              border: `2px solid ${T.accent}`,
+              borderTopColor: "transparent",
+              animation: "spin .7s linear infinite",
+            }}
+          />
           Saving…
         </span>
       );
     if (qualSaveStatus === "saved")
       return (
-        <span style={{ fontSize: 11, color: T.green, display: "flex", alignItems: "center", gap: 4, animation: "fadeUp .3s ease" }}>
+        <span
+          style={{
+            fontSize: 11,
+            color: T.green,
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            animation: "fadeUp .3s ease",
+          }}
+        >
           <span style={{ fontSize: 13 }}>✓</span> Saved
         </span>
       );
     if (qualSaveStatus === "dirty")
       return (
-        <span style={{ fontSize: 11, color: T.orange, display: "flex", alignItems: "center", gap: 5 }}>
-          <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: T.orange, animation: "pulse .8s ease infinite" }} />
+        <span
+          style={{
+            fontSize: 11,
+            color: T.orange,
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+          }}
+        >
+          <span
+            style={{
+              display: "inline-block",
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: T.orange,
+              animation: "pulse .8s ease infinite",
+            }}
+          />
           Unsaved
         </span>
       );
@@ -2047,6 +1662,15 @@ function GroupPredictions() {
                 .map((f) => {
                   const p = matchPreds[f.id];
                   const fi = fixtures.indexOf(f);
+                  const dbM = matches.find((m) => m.id === f.id);
+                  const mStatus = dbM?.status || "upcoming";
+                  const mDeadline = new Date(
+                    new Date(`${f.match_date}T${f.match_time}Z`).getTime() - 30 * 60000,
+                  );
+                  const fiLocked =
+                    mStatus === "live" ||
+                    mStatus === "finished" ||
+                    new Date() >= mDeadline;
                   return (
                     <div
                       key={f.id}
@@ -2062,6 +1686,7 @@ function GroupPredictions() {
                         background: af === fi ? `${T.accent}1a` : T.surf2,
                         border: `1px solid ${af === fi ? T.accent : T.border}`,
                         transition: "all .15s",
+                        opacity: fiLocked && !p ? 0.6 : 1,
                       }}
                     >
                       <span style={{ fontSize: 13 }}>{FLAG(f.home)}</span>
@@ -2081,7 +1706,7 @@ function GroupPredictions() {
                         </span>
                       ) : (
                         <span style={{ fontSize: 9, color: T.muted }}>
-                          {f.date}
+                          {f.match_date?.slice(5)}
                         </span>
                       )}
                       <span
@@ -2095,8 +1720,14 @@ function GroupPredictions() {
                         {f.away}
                       </span>
                       <span style={{ fontSize: 13 }}>{FLAG(f.away)}</span>
-                      {p &&
-                        (p.is_locked ? (
+                      {mStatus === "live" && (
+                        <span style={{ fontSize: 9, color: T.green }}>●</span>
+                      )}
+                      {mStatus === "finished" && (
+                        <span style={{ fontSize: 9, color: T.muted }}>✓</span>
+                      )}
+                      {p && mStatus !== "live" && mStatus !== "finished" &&
+                        (fiLocked ? (
                           <span style={{ fontSize: 9, color: T.red }}>🔒</span>
                         ) : (
                           <span style={{ fontSize: 9, color: T.green }}>✓</span>
@@ -2210,12 +1841,16 @@ function GroupPredictions() {
                   setQualSaveStatus("saving");
                   saveGroupQual(ag, firstPick, secondPick).then(() => {
                     setQualSaveStatus("saved");
-                    qualSavedTimerRef.current = setTimeout(() => setQualSaveStatus("idle"), 3000);
+                    qualSavedTimerRef.current = setTimeout(
+                      () => setQualSaveStatus("idle"),
+                      3000,
+                    );
                   });
                 }}
                 disabled={qualSaveStatus === "saving"}
                 style={{
-                  background: qualSaveStatus === "saved" ? `${T.green}22` : T.accent,
+                  background:
+                    qualSaveStatus === "saved" ? `${T.green}22` : T.accent,
                   color: qualSaveStatus === "saved" ? T.green : "#000",
                   border: `1px solid ${qualSaveStatus === "saved" ? T.green : "transparent"}`,
                   padding: "8px 14px",
@@ -2227,7 +1862,11 @@ function GroupPredictions() {
                   transition: "all .25s",
                 }}
               >
-                {qualSaveStatus === "saving" ? "Saving…" : qualSaveStatus === "saved" ? "✓ Saved" : "Save"}
+                {qualSaveStatus === "saving"
+                  ? "Saving…"
+                  : qualSaveStatus === "saved"
+                    ? "✓ Saved"
+                    : "Save"}
               </button>
               <QualSaveIndicator />
             </div>
@@ -2247,21 +1886,49 @@ function GroupPredictions() {
 }
 
 // ── Save-status values ─────────────────────────────────────────────────────
-const SAVE_STATUS = { idle: "idle", dirty: "dirty", saving: "saving", saved: "saved" };
+const SAVE_STATUS = {
+  idle: "idle",
+  dirty: "dirty",
+  saving: "saving",
+  saved: "saved",
+};
 
 function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
-  // ── Lock Logic: Lock 30 minutes BEFORE match starts ───
-  const matchTime = new Date(`${match.match_date}T${match.match_time}`);
+  const { matches: dbMatches } = useU();
+  const dbMatch = dbMatches.find((m) => m.id === match.id);
+  const apiStatus = dbMatch?.status || "upcoming"; // upcoming | live | finished
+  const matchStatus = dbMatch?.match_status || null; // granular: "1st Half", "Half Time", etc.
+
+  // ── Lock Logic ─────────────────────────────────────────────────────────────
+  // Lock if: API says live/finished, OR 30-min deadline passed, OR DB says locked
+  const matchTime = new Date(`${match.match_date}T${match.match_time}Z`); // treat as UTC
   const now = new Date();
-  const deadline = new Date(matchTime.getTime() - 30 * 60000); // 30 min before
-  const isTimeLocked = now >= deadline; // Lock 30 min before kick-off
-  const isLocked = existing?.is_locked || isTimeLocked;
-  
+  const deadline = new Date(matchTime.getTime() - 30 * 60000);
+  const isTimeLocked = now >= deadline;
+  const isApiLocked = apiStatus === "live" || apiStatus === "finished";
+  const isLocked = existing?.is_locked || isTimeLocked || isApiLocked;
+
+  // ── Status Badge Helper ─────────────────────────────────────────────────────
+  const getStatusBadge = () => {
+    if (apiStatus === "finished") return { text: "Finished", color: T.muted, bg: `${T.muted}20` };
+    if (apiStatus === "live") return { text: matchStatus || "Live", color: T.green, bg: `${T.green}20` };
+    if (isTimeLocked) return { text: "Prediction Closed", color: T.red, bg: `${T.red}20` };
+    const minsLeft = (deadline - now) / 60000;
+    if (minsLeft <= 120) {
+      const h = Math.floor(minsLeft / 60);
+      const m = Math.floor(minsLeft % 60);
+      const label = h > 0 ? `Closes in ${h}h ${m}m` : `Closes in ${m}m`;
+      return { text: label, color: T.orange, bg: `${T.orange}20` };
+    }
+    return { text: "Prediction Open", color: T.green, bg: `${T.green}20` };
+  };
+  const statusBadge = getStatusBadge();
+
   const [hg, setHg] = useState(() => existing?.predicted_home_score ?? 0);
   const [ag2, setAg2] = useState(() => existing?.predicted_away_score ?? 0);
   const [commOdds, setCommOdds] = useState(null);
   const [saveStatus, setSaveStatus] = useState(
-    existing ? SAVE_STATUS.saved : SAVE_STATUS.idle
+    existing ? SAVE_STATUS.saved : SAVE_STATUS.idle,
   );
 
   // Sync local state when existing prop changes
@@ -2279,13 +1946,22 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
   ]);
 
   // Save on every score change — but block if locked
-  const doSave = useCallback(async (h, a) => {
-    if (isLocked) return; // ⛔ BLOCK SAVE if 30 min deadline passed
-    setSaveStatus(SAVE_STATUS.saving);
-    await onSave(h, a);
-    setSaveStatus(SAVE_STATUS.saved);
-    setTimeout(() => setSaveStatus((s) => s === SAVE_STATUS.saved ? SAVE_STATUS.idle : s), 3000);
-  }, [isLocked, onSave]);
+  const doSave = useCallback(
+    async (h, a) => {
+      if (isLocked) return; // ⛔ BLOCK SAVE if 30 min deadline passed
+      setSaveStatus(SAVE_STATUS.saving);
+      await onSave(h, a);
+      setSaveStatus(SAVE_STATUS.saved);
+      setTimeout(
+        () =>
+          setSaveStatus((s) =>
+            s === SAVE_STATUS.saved ? SAVE_STATUS.idle : s,
+          ),
+        3000,
+      );
+    },
+    [isLocked, onSave],
+  );
 
   const handleSetHg = (v) => {
     if (isLocked) return; // ⛔ BLOCK INPUT
@@ -2359,21 +2035,65 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
     if (isLocked) return null;
     if (saveStatus === SAVE_STATUS.saving)
       return (
-        <span style={{ fontSize: 11, color: T.muted, display: "flex", alignItems: "center", gap: 5 }}>
-          <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", border: `2px solid ${T.accent}`, borderTopColor: "transparent", animation: "spin .7s linear infinite" }} />
+        <span
+          style={{
+            fontSize: 11,
+            color: T.muted,
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+          }}
+        >
+          <span
+            style={{
+              display: "inline-block",
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              border: `2px solid ${T.accent}`,
+              borderTopColor: "transparent",
+              animation: "spin .7s linear infinite",
+            }}
+          />
           Saving…
         </span>
       );
     if (saveStatus === SAVE_STATUS.saved)
       return (
-        <span style={{ fontSize: 11, color: T.green, display: "flex", alignItems: "center", gap: 4, animation: "fadeUp .3s ease" }}>
+        <span
+          style={{
+            fontSize: 11,
+            color: T.green,
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            animation: "fadeUp .3s ease",
+          }}
+        >
           <span style={{ fontSize: 13 }}>✓</span> Saved
         </span>
       );
     if (saveStatus === SAVE_STATUS.dirty)
       return (
-        <span style={{ fontSize: 11, color: T.orange, display: "flex", alignItems: "center", gap: 5 }}>
-          <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: T.orange, animation: "pulse .8s ease infinite" }} />
+        <span
+          style={{
+            fontSize: 11,
+            color: T.orange,
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+          }}
+        >
+          <span
+            style={{
+              display: "inline-block",
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: T.orange,
+              animation: "pulse .8s ease infinite",
+            }}
+          />
           Unsaved
         </span>
       );
@@ -2385,10 +2105,13 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
       style={{
         background: T.surf,
         border: `1px solid ${
-          isLocked ? T.red
-          : saveStatus === SAVE_STATUS.saved ? `${T.green}55`
-          : saveStatus === SAVE_STATUS.dirty ? `${T.orange}55`
-          : T.border
+          isLocked
+            ? T.red
+            : saveStatus === SAVE_STATUS.saved
+              ? `${T.green}55`
+              : saveStatus === SAVE_STATUS.dirty
+                ? `${T.orange}55`
+                : T.border
         }`,
         borderRadius: 13,
         padding: 16,
@@ -2398,7 +2121,34 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
         transition: "border-color .3s",
       }}
     >
-      {isLocked ? (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 6,
+        }}
+      >
+        <div style={{ fontSize: 10, color: T.muted }}>
+          📅 {match.match_date} · 🕐 {match.match_time} UTC · 📍{" "}
+          {VENUES[match.venue] || match.venue}
+        </div>
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            padding: "2px 8px",
+            borderRadius: 12,
+            background: statusBadge.bg,
+            color: statusBadge.color,
+            border: `1px solid ${statusBadge.color}44`,
+          }}
+        >
+          {statusBadge.text}
+        </span>
+      </div>
+      {isLocked && apiStatus !== "live" && apiStatus !== "finished" && (
         <div
           style={{
             background: `${T.red}15`,
@@ -2410,12 +2160,24 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
             textAlign: "center",
           }}
         >
-          🔒 Prediction locked — deadline was 30 min before kick-off
+          🔒 Prediction locked — deadline passed 30 min before kick-off
         </div>
-      ) : (
-        <div style={{ fontSize: 10, color: T.muted, textAlign: "center" }}>
-          📅 {match.match_date} · 🕐 {match.match_time} · 📍{" "}
-          {VENUES[match.venue] || match.venue}
+      )}
+      {(apiStatus === "live" || apiStatus === "finished") && (
+        <div
+          style={{
+            background: apiStatus === "live" ? `${T.green}15` : `${T.muted}15`,
+            border: `1px solid ${apiStatus === "live" ? T.green : T.muted}44`,
+            borderRadius: 8,
+            padding: "7px 12px",
+            fontSize: 12,
+            color: apiStatus === "live" ? T.green : T.muted,
+            textAlign: "center",
+          }}
+        >
+          {apiStatus === "live"
+            ? `⚽ Match in progress — ${matchStatus || "Live"}`
+            : `✅ Match finished${dbMatch?.actual_home_score != null ? ` · Final: ${dbMatch.actual_home_score}–${dbMatch.actual_away_score}` : ""}`}
         </div>
       )}
       <div
@@ -2706,9 +2468,14 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
                   max={8}
                   step={1}
                   value={side.g}
-                  onChange={(e) => !isLocked && side.set(Number(e.target.value))}
+                  onChange={(e) =>
+                    !isLocked && side.set(Number(e.target.value))
+                  }
                   disabled={isLocked}
-                  style={{ accentColor: side.color, opacity: isLocked ? 0.5 : 1 }}
+                  style={{
+                    accentColor: side.color,
+                    opacity: isLocked ? 0.5 : 1,
+                  }}
                 />
                 <div style={{ display: "flex", gap: 3, marginTop: 6 }}>
                   {[0, 1, 2, 3, 4, 5].map((n) => (
@@ -2783,27 +2550,39 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
                 }}
                 disabled={isLocked || saveStatus === SAVE_STATUS.saving}
                 style={{
-                  background: isLocked 
-                    ? `${T.red}22` 
-                    : saveStatus === SAVE_STATUS.saved ? `${T.green}22` : T.accent,
-                  color: isLocked 
-                    ? T.red 
-                    : saveStatus === SAVE_STATUS.saved ? T.green : "#000",
-                  border: `1px solid ${isLocked ? T.red : (saveStatus === SAVE_STATUS.saved ? T.green : "transparent")}`,
+                  background: isLocked
+                    ? `${T.red}22`
+                    : saveStatus === SAVE_STATUS.saved
+                      ? `${T.green}22`
+                      : T.accent,
+                  color: isLocked
+                    ? T.red
+                    : saveStatus === SAVE_STATUS.saved
+                      ? T.green
+                      : "#000",
+                  border: `1px solid ${isLocked ? T.red : saveStatus === SAVE_STATUS.saved ? T.green : "transparent"}`,
                   padding: "7px 16px",
                   borderRadius: 8,
                   fontFamily: "Oswald",
                   fontSize: 12,
                   fontWeight: 700,
-                  opacity: isLocked ? 0.5 : (saveStatus === SAVE_STATUS.saving ? 0.6 : 1),
+                  opacity: isLocked
+                    ? 0.5
+                    : saveStatus === SAVE_STATUS.saving
+                      ? 0.6
+                      : 1,
                   transition: "all .25s",
                   whiteSpace: "nowrap",
                   cursor: isLocked ? "not-allowed" : "pointer",
                 }}
               >
-                {isLocked 
-                  ? "🔒 Locked" 
-                  : saveStatus === SAVE_STATUS.saving ? "Saving…" : saveStatus === SAVE_STATUS.saved ? "✓ Saved" : "Save"}
+                {isLocked
+                  ? "🔒 Locked"
+                  : saveStatus === SAVE_STATUS.saving
+                    ? "Saving…"
+                    : saveStatus === SAVE_STATUS.saved
+                      ? "✓ Saved"
+                      : "Save"}
               </button>
             </div>
           </div>
@@ -4079,338 +3858,294 @@ function FullBracket() {
   );
 }
 
+const PAGE_SIZE = 50;
+
 function LeaderboardView() {
   const { T, leaderboard, profile } = useU();
   const medals = ["🥇", "🥈", "🥉"];
+
+  const [players, setPlayers]     = useState([]);
+  const [total, setTotal]         = useState(0);
+  const [page, setPage]           = useState(0);
+  const [search, setSearch]       = useState("");
+  const [loadingP, setLoadingP]   = useState(false);
+  const [draftSearch, setDraft]   = useState("");
+  const searchTimer               = useRef(null);
+
+  // My rank is always from the context leaderboard (full top-100 already loaded)
+  const myEntry = leaderboard.find((u) => u.id === profile?.id);
+  const myRank  = myEntry?.rank ?? null;
+
+  const loadPlayers = async (p, q) => {
+    setLoadingP(true);
+    const { data, count, error } = await getPlayers({ page: p, limit: PAGE_SIZE, search: q });
+    if (!error) {
+      setPlayers(p === 0 ? (data || []) : (prev) => [...prev, ...(data || [])]);
+      setTotal(count ?? 0);
+    }
+    setLoadingP(false);
+  };
+
+  // Initial load + reload on search
+  useEffect(() => {
+    setPage(0);
+    loadPlayers(0, search);
+  }, [search]);
+
+  const handleSearchChange = (val) => {
+    setDraft(val);
+    clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => setSearch(val), 350);
+  };
+
+  const loadMore = () => {
+    const next = page + 1;
+    setPage(next);
+    loadPlayers(next, search);
+  };
+
+  const hasMore = players.length < total;
+  const headers = ["Rank", "Player", "Country", "Points", "Accuracy %", "Exact", "Correct", "Total", "Won", "Lost"];
+
   return (
     <div className="fade-up">
-      <h2
-        style={{
-          fontFamily: "Oswald",
-          fontSize: 20,
-          color: T.accent,
-          marginBottom: 16,
-        }}
-      >
-        🏅 Global Leaderboard
-      </h2>
-      <div
-        style={{
-          background: T.surf,
-          border: `1px solid ${T.border}`,
-          borderRadius: 12,
-          overflow: "hidden",
-        }}
-      >
-        <table
-          style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}
-        >
+      {/* Header row */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <h2 style={{ fontFamily: "Oswald", fontSize: 20, color: T.accent }}>
+          🏅 Global Leaderboard
+        </h2>
+        {myEntry && (
+          <div style={{ background: `${T.accent}15`, border: `1px solid ${T.accent}40`, borderRadius: 8, padding: "6px 12px", fontSize: 12, color: T.accent, fontFamily: "Oswald" }}>
+            Your rank: #{myRank} · {myEntry.total_points} pts
+          </div>
+        )}
+      </div>
+
+      {/* Search bar */}
+      <div style={{ marginBottom: 12 }}>
+        <input
+          value={draftSearch}
+          onChange={(e) => handleSearchChange(e.target.value)}
+          placeholder="Search by username or country…"
+          style={{
+            width: "100%",
+            padding: "9px 14px",
+            background: T.surf,
+            border: `1px solid ${T.border}`,
+            borderRadius: 9,
+            color: T.text,
+            fontSize: 13,
+            outline: "none",
+          }}
+        />
+      </div>
+
+      {/* Stats summary */}
+      <div style={{ fontSize: 11, color: T.muted, marginBottom: 10 }}>
+        {search ? `${total} result${total !== 1 ? "s" : ""} for "${search}"` : `${total.toLocaleString()} registered player${total !== 1 ? "s" : ""}`}
+        {" · "}showing {players.length}
+      </div>
+
+      <div style={{ background: T.surf, border: `1px solid ${T.border}`, borderRadius: 12, overflow: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 700 }}>
           <thead>
             <tr style={{ background: T.surf2 }}>
-              {["Rank", "Player", "Points", "Accuracy", "Exact", "Correct"].map(
-                (h) => (
-                  <th
-                    key={h}
-                    style={{
-                      padding: "10px 12px",
-                      textAlign: "left",
-                      fontSize: 11,
-                      color: T.muted,
-                      fontWeight: 700,
-                      borderBottom: `1px solid ${T.border}`,
-                    }}
-                  >
-                    {h}
-                  </th>
-                ),
-              )}
+              {headers.map((h) => (
+                <th key={h} style={{ padding: "10px 10px", textAlign: "left", fontSize: 11, color: T.muted, fontWeight: 700, borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>
+                  {h}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {leaderboard.map((u, i) => {
+            {players.map((u, i) => {
               const isMe = u.id === profile?.id;
+              const absRank = u.rank ?? (page * PAGE_SIZE + i + 1);
               return (
                 <tr
                   key={u.id}
                   style={{
-                    background: isMe
-                      ? `${T.accent}10`
-                      : i % 2 === 0
-                        ? "transparent"
-                        : T.surf2,
+                    background: isMe ? `${T.accent}10` : i % 2 === 0 ? "transparent" : T.surf2,
                     borderBottom: `1px solid ${T.border}33`,
                   }}
                 >
-                  <td
-                    style={{
-                      padding: "9px 12px",
-                      fontWeight: 700,
-                      color: i < 3 ? T.accent : T.text,
-                    }}
-                  >
-                    {medals[i] || `#${i + 1}`}
+                  <td style={{ padding: "9px 10px", fontWeight: 700, color: absRank <= 3 ? T.accent : T.text, whiteSpace: "nowrap" }}>
+                    {absRank <= 3 && !search ? medals[absRank - 1] : `#${absRank}`}
                   </td>
-                  <td style={{ padding: "9px 12px" }}>
-                    <div
-                      style={{ display: "flex", alignItems: "center", gap: 7 }}
-                    >
-                      <div
-                        style={{
-                          width: 26,
-                          height: 26,
-                          borderRadius: "50%",
-                          background: `${T.accent}33`,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          fontSize: 11,
-                          fontWeight: 700,
-                          color: T.accent,
-                        }}
-                      >
+                  <td style={{ padding: "9px 10px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                      <div style={{ width: 26, height: 26, borderRadius: "50%", background: `${T.accent}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: T.accent, flexShrink: 0 }}>
                         {u.username[0].toUpperCase()}
                       </div>
-                      <span
-                        style={{
-                          fontWeight: isMe ? 700 : 600,
-                          color: isMe ? T.accent : T.text,
-                        }}
-                      >
-                        {u.username}
-                        {isMe ? " (you)" : ""}
+                      <span style={{ fontWeight: isMe ? 700 : 600, color: isMe ? T.accent : T.text, whiteSpace: "nowrap" }}>
+                        {u.username}{isMe ? " (you)" : ""}
                       </span>
                     </div>
                   </td>
-                  <td
-                    style={{
-                      padding: "9px 12px",
-                      fontFamily: "Oswald",
-                      fontSize: 16,
-                      fontWeight: 700,
-                      color: T.accent,
-                    }}
-                  >
-                    {u.total_points}
+                  <td style={{ padding: "9px 10px", color: T.muted, whiteSpace: "nowrap" }}>{u.country || "—"}</td>
+                  <td style={{ padding: "9px 10px", fontFamily: "Oswald", fontSize: 16, fontWeight: 700, color: T.accent }}>{u.total_points}</td>
+                  <td style={{ padding: "9px 10px", color: T.green, whiteSpace: "nowrap" }}>{u.accuracy_pct ?? 0}%</td>
+                  <td style={{ padding: "9px 10px" }}>
+                    <span style={{ background: `${T.accent}22`, color: T.accent, borderRadius: 4, padding: "1px 6px", fontSize: 11, fontWeight: 700 }}>{u.exact_predictions || 0}</span>
                   </td>
-                  <td style={{ padding: "9px 12px", color: T.green }}>
-                    {u.accuracy_pct}%
+                  <td style={{ padding: "9px 10px" }}>
+                    <span style={{ background: `${T.green}22`, color: T.green, borderRadius: 4, padding: "1px 6px", fontSize: 11, fontWeight: 700 }}>{u.correct_predictions || 0}</span>
                   </td>
-                  <td style={{ padding: "9px 12px" }}>
-                    {u.exact_predictions || 0}
-                  </td>
-                  <td style={{ padding: "9px 12px" }}>
-                    {u.correct_predictions || 0}
-                  </td>
+                  <td style={{ padding: "9px 10px", color: T.text }}>{u.total_predictions || 0}</td>
+                  <td style={{ padding: "9px 10px", color: T.green, fontWeight: 600 }}>{u.predictions_won || 0}</td>
+                  <td style={{ padding: "9px 10px", color: T.red, fontWeight: 600 }}>{u.predictions_lost || 0}</td>
                 </tr>
               );
             })}
-            {leaderboard.length === 0 && (
+            {players.length === 0 && !loadingP && (
               <tr>
-                <td
-                  colSpan={6}
-                  style={{ padding: 40, textAlign: "center", color: T.muted }}
-                >
-                  No predictions yet — be the first!
+                <td colSpan={10} style={{ padding: 40, textAlign: "center", color: T.muted }}>
+                  {search ? `No players found for "${search}"` : "No players registered yet — be the first!"}
+                </td>
+              </tr>
+            )}
+            {loadingP && (
+              <tr>
+                <td colSpan={10} style={{ padding: 20, textAlign: "center", color: T.muted, fontSize: 12 }}>
+                  Loading…
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {hasMore && !loadingP && (
+        <div style={{ textAlign: "center", marginTop: 14 }}>
+          <button
+            onClick={loadMore}
+            style={{ background: T.surf, border: `1px solid ${T.border}`, borderRadius: 8, padding: "9px 24px", color: T.accent, fontFamily: "Oswald", fontSize: 14, fontWeight: 700, cursor: "pointer" }}
+          >
+            Load more ({total - players.length} remaining)
+          </button>
+        </div>
+      )}
+
+      <div style={{ textAlign: "center", marginTop: 10, fontSize: 11, color: T.muted }}>
+        Top-100 leaderboard refreshes every 60 seconds
+      </div>
     </div>
   );
 }
 
 function MyPredictions() {
-  const { T, matchPreds, knockouts, profile, accMul } = useU();
+  const { T, matchPreds, knockouts, profile, leaderboard } = useU();
   const preds = Object.values(matchPreds);
-  const totalPot = preds.reduce(
-    (s, p) => s + parseFloat(p.potential_payout || 0),
-    0,
-  );
+
+  const scored   = preds.filter((p) => p.result_status != null);
+  const exact    = scored.filter((p) => p.result_status === "exact").length;
+  const correct  = scored.filter((p) => p.result_status === "correct").length;
+  const wrong    = scored.filter((p) => p.result_status === "wrong").length;
+  const totalPts = scored.reduce((s, p) => s + (p.points_earned || 0), 0);
+  const accuracy = scored.length > 0 ? Math.round(((exact + correct) / scored.length) * 100) : 0;
+  const myRank   = leaderboard.findIndex((u) => u.id === profile?.id) + 1;
+
+  const allFix = Object.values(GF).flat();
+
+  const RESULT_COLOR = { exact: T.accent, correct: T.green, wrong: T.red, pending: T.muted };
+  const RESULT_LABEL = { exact: "Exact +10pts", correct: "Correct +5pts", wrong: "Wrong", pending: "Pending" };
+
+  const stats = [
+    { icon: "⚽", label: "Match Preds", val: `${preds.length}/72`,   color: T.accent },
+    { icon: "🏆", label: "Total Points", val: `${profile?.total_points ?? totalPts} pts`, color: T.accent },
+    { icon: "🌍", label: "World Rank",  val: myRank ? `#${myRank}` : "—", color: T.orange },
+    { icon: "🎯", label: "Exact Scores", val: exact,                  color: T.accent },
+    { icon: "✅", label: "Correct",      val: correct,                color: T.green },
+    { icon: "❌", label: "Wrong",        val: wrong,                  color: T.red },
+    { icon: "📊", label: "Accuracy",    val: `${accuracy}%`,          color: T.green },
+    { icon: "🔮", label: "KO Picks",    val: Object.keys(knockouts).length, color: T.purple },
+  ];
+
   return (
     <div className="fade-up">
-      <h2
-        style={{
-          fontFamily: "Oswald",
-          fontSize: 20,
-          color: T.accent,
-          marginBottom: 14,
-        }}
-      >
+      <h2 style={{ fontFamily: "Oswald", fontSize: 20, color: T.accent, marginBottom: 14 }}>
         📋 My Predictions
       </h2>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))",
-          gap: 10,
-          marginBottom: 18,
-        }}
-      >
-        {[
-          {
-            icon: "⚽",
-            label: "Match Preds",
-            val: `${preds.length}/72`,
-            color: T.accent,
-          },
-          {
-            icon: "🔒",
-            label: "Locked",
-            val: preds.filter((p) => p.is_locked).length,
-            color: T.red,
-          },
-          {
-            icon: "💎",
-            label: "Pot. Payout",
-            val: `${totalPot.toFixed(0)} pts`,
-            color: T.green,
-          },
-          {
-            icon: "⚡",
-            label: "Accumulator",
-            val: fmtOdds(accMul),
-            color: T.orange,
-          },
-          {
-            icon: "🔮",
-            label: "KO Picks",
-            val: Object.keys(knockouts).length,
-            color: T.purple,
-          },
-        ].map((s, i) => (
-          <div
-            key={i}
-            style={{
-              background: T.surf,
-              border: `1px solid ${T.border}`,
-              borderRadius: 11,
-              padding: "12px 10px",
-              textAlign: "center",
-            }}
-          >
-            <div style={{ fontSize: 22, marginBottom: 4 }}>{s.icon}</div>
-            <div
-              style={{
-                fontFamily: "Oswald",
-                fontSize: 18,
-                fontWeight: 700,
-                color: s.color,
-              }}
-            >
-              {s.val}
-            </div>
-            <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>
-              {s.label}
-            </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))", gap: 10, marginBottom: 18 }}>
+        {stats.map((s, i) => (
+          <div key={i} style={{ background: T.surf, border: `1px solid ${T.border}`, borderRadius: 11, padding: "12px 10px", textAlign: "center" }}>
+            <div style={{ fontSize: 20, marginBottom: 4 }}>{s.icon}</div>
+            <div style={{ fontFamily: "Oswald", fontSize: 17, fontWeight: 700, color: s.color }}>{s.val}</div>
+            <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>{s.label}</div>
           </div>
         ))}
       </div>
-      <div
-        style={{
-          background: T.surf,
-          border: `1px solid ${T.border}`,
-          borderRadius: 12,
-          overflow: "hidden",
-        }}
-      >
-        <div
-          style={{
-            padding: "10px 14px",
-            background: T.surf2,
-            borderBottom: `1px solid ${T.border}`,
-            fontFamily: "Oswald",
-            fontSize: 13,
-            color: T.accent,
-          }}
-        >
-          All Match Predictions
+
+      <div style={{ background: T.surf, border: `1px solid ${T.border}`, borderRadius: 12, overflow: "hidden" }}>
+        <div style={{ padding: "10px 14px", background: T.surf2, borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontFamily: "Oswald", fontSize: 13, color: T.accent }}>All Match Predictions</span>
+          <span style={{ fontSize: 11, color: T.muted }}>{scored.length} scored · {preds.length - scored.length} pending</span>
         </div>
         {preds.length === 0 && (
-          <div
-            style={{
-              padding: 30,
-              textAlign: "center",
-              color: T.muted,
-              fontSize: 13,
-            }}
-          >
+          <div style={{ padding: 30, textAlign: "center", color: T.muted, fontSize: 13 }}>
             No predictions yet — head to Group Stage to start!
           </div>
         )}
-        {preds.map((p) => {
-          const allFix = Object.values(GF).flat();
-          const fix = allFix.find((f) => f.id === p.match_id);
-          return (
-            <div
-              key={p.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 14px",
-                borderBottom: `1px solid ${T.border}22`,
-                fontSize: 11,
-              }}
-            >
-              <span style={{ fontSize: 14 }}>{FLAG(fix?.home || "TBD")}</span>
-              <span style={{ flex: 1, fontWeight: 600 }}>
-                {fix?.home || p.match_id}
-              </span>
-              <span
+        {preds
+          .slice()
+          .sort((a, b) => {
+            // Scored first (exact > correct > wrong), then pending
+            const order = { exact: 0, correct: 1, wrong: 2, null: 3, undefined: 3 };
+            return (order[a.result_status] ?? 3) - (order[b.result_status] ?? 3);
+          })
+          .map((p) => {
+            const fix = allFix.find((f) => f.id === p.match_id);
+            const rs = p.result_status;
+            const rc = RESULT_COLOR[rs] || T.muted;
+            return (
+              <div
+                key={p.id}
                 style={{
-                  fontFamily: "Oswald",
-                  fontSize: 13,
-                  color: T.accent,
-                  fontWeight: 700,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "9px 14px",
+                  borderBottom: `1px solid ${T.border}22`,
+                  fontSize: 12,
+                  borderLeft: rs ? `3px solid ${rc}` : `3px solid transparent`,
                 }}
               >
-                {p.predicted_home_score}–{p.predicted_away_score}
-              </span>
-              <span style={{ flex: 1, fontWeight: 600, textAlign: "right" }}>
-                {fix?.away || ""}
-              </span>
-              <span style={{ fontSize: 14 }}>{FLAG(fix?.away || "TBD")}</span>
-              <span
-                style={{
-                  fontSize: 10,
-                  color: T.blue,
-                  minWidth: 38,
-                  textAlign: "right",
-                }}
-              >
-                {fmtOdds(p.odds_at_submission)}
-              </span>
-              {p.is_locked ? (
-                <span style={{ color: T.red, fontSize: 10 }}>🔒</span>
-              ) : (
-                <span style={{ color: T.green, fontSize: 10 }}>✓</span>
-              )}
-              {p.result_status && (
-                <span
-                  className="chip"
-                  style={{
-                    background:
-                      p.result_status === "exact"
-                        ? `${T.accent}22`
-                        : p.result_status === "correct"
-                          ? `${T.green}22`
-                          : `${T.red}22`,
-                    color:
-                      p.result_status === "exact"
-                        ? T.accent
-                        : p.result_status === "correct"
-                          ? T.green
-                          : T.red,
-                  }}
-                >
-                  {p.result_status}
-                </span>
-              )}
-            </div>
-          );
-        })}
+                <span style={{ fontSize: 15 }}>{FLAG(fix?.home || "TBD")}</span>
+                <span style={{ flex: 1, fontWeight: 600, fontSize: 12 }}>{fix?.home || p.match_id}</span>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontFamily: "Oswald", fontSize: 14, color: T.accent, fontWeight: 700, lineHeight: 1 }}>
+                    {p.predicted_home_score}–{p.predicted_away_score}
+                  </div>
+                  {fix && p.result_status && (
+                    <div style={{ fontSize: 10, color: T.muted, marginTop: 1 }}>
+                      actual: {fix ? (Object.values(matchPreds).find(m => m.match_id === fix.id) ? "" : "") : ""}
+                    </div>
+                  )}
+                </div>
+                <span style={{ flex: 1, fontWeight: 600, textAlign: "right", fontSize: 12 }}>{fix?.away || ""}</span>
+                <span style={{ fontSize: 15 }}>{FLAG(fix?.away || "TBD")}</span>
+                {rs ? (
+                  <div style={{ textAlign: "right", minWidth: 80 }}>
+                    <span style={{
+                      display: "inline-block",
+                      background: `${rc}20`,
+                      color: rc,
+                      borderRadius: 5,
+                      padding: "2px 7px",
+                      fontSize: 10,
+                      fontWeight: 700,
+                    }}>
+                      {RESULT_LABEL[rs] || rs}
+                    </span>
+                  </div>
+                ) : (
+                  <span style={{ color: T.muted, fontSize: 10, minWidth: 80, textAlign: "right" }}>
+                    {p.is_locked ? "🔒 Locked" : "⏳ Pending"}
+                  </span>
+                )}
+              </div>
+            );
+          })}
       </div>
     </div>
   );
