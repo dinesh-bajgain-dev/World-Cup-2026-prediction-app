@@ -4,56 +4,37 @@ import { supabase, getProfile, ensureProfile } from "../lib/supabase";
 const AuthCtx = createContext(null);
 export const useAuth = () => useContext(AuthCtx);
 
-// Add this helper function at the top of your file (outside the component)
-const sendWelcomeEmail = async (email) => {
+const APP_URL = import.meta.env.VITE_APP_URL || window.location.origin;
+
+const sendWelcomeEmail = async (email, username) => {
   try {
     const res = await fetch("/api/send-email", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         to: email,
-        subject: "Welcome to World Cup Predictor! 🏆",
+        subject: "Welcome to World Cup 2026 Predictor!",
         html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h1 style="color: #2563eb;">Welcome to World Cup Predictor!</h1>
-            <p>Hi there,</p>
-            <p>Thanks for joining the ultimate World Cup 2026 prediction game.</p>
-            <p>Start predicting matches now and climb the leaderboard to win!</p>
-            <a href="https://your-production-url.com" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin-top: 10px;">Start Predicting</a>
-            <p style="margin-top: 20px; color: #666; font-size: 12px;">
-              Best,<br>The World Cup Team
-            </p>
+          <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#0f1117;color:#e5e7eb;padding:32px;border-radius:12px;">
+            <div style="text-align:center;margin-bottom:24px;">
+              <div style="font-size:48px;">🏆</div>
+              <h1 style="color:#d4a853;font-size:24px;margin:8px 0;">FIFA World Cup 2026 Predictor</h1>
+            </div>
+            <p>Hi <strong>${username || "there"}</strong>,</p>
+            <p>You're in! Start predicting matches, climb the global leaderboard, and prove you know football.</p>
+            <div style="text-align:center;margin:28px 0;">
+              <a href="${APP_URL}" style="display:inline-block;background:#d4a853;color:#000;padding:13px 28px;text-decoration:none;border-radius:8px;font-weight:700;font-size:15px;">Start Predicting →</a>
+            </div>
+            <p style="color:#6b7280;font-size:12px;">Best of luck,<br>The WC 2026 Team</p>
           </div>
         `,
       }),
     });
-
     const data = await res.json();
-    if (!data.success) {
-      console.warn("Welcome email failed:", data.error);
-      // Don't block signup if email fails
-    }
+    if (!data.success) console.warn("[welcome-email] failed:", data.error);
   } catch (err) {
-    console.error("Email API error:", err);
+    console.error("[welcome-email] API error:", err);
   }
-};
-
-// Inside your signUp function, AFTER successful signup:
-export const signUp = async (email, password, username) => {
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: { data: { username } },
-  });
-
-  if (error) throw error;
-
-  // ✅ Send Brevo welcome email if signup succeeded
-  if (data?.user?.email) {
-    await sendWelcomeEmail(data.user.email);
-  }
-
-  return { data, error };
 };
 
 export function AuthProvider({ children }) {

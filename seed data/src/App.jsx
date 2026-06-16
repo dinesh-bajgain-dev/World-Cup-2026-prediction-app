@@ -358,8 +358,11 @@ function AuthPage({ T, dark, setDark }) {
   const [uname, setUname] = useState("");
   const [country, setCountry] = useState("");
   const [err, setErr] = useState("");
-  const [ok, setOk] = useState("");
+  const [ok, setOk] = useState(false); // true = registered, waiting for confirm
   const [busy, setBusy] = useState(false);
+  const [resendBusy, setResendBusy] = useState(false);
+  const [resendMsg, setResendMsg] = useState("");
+
   const submit = async () => {
     setErr("");
     setBusy(true);
@@ -372,11 +375,27 @@ function AuthPage({ T, dark, setDark }) {
         setBusy(false);
         return;
       }
-      const { error } = await signUp(email, pw, uname, country || null);
-      if (error) setErr(error.message);
-      else setOk("Check your email to confirm!");
+      const { data, error } = await signUp(email, pw, uname, country || null);
+      if (error) {
+        // "User already registered" means the account exists but may be unconfirmed
+        if (error.message?.toLowerCase().includes("already registered")) {
+          setOk(true);
+        } else {
+          setErr(error.message);
+        }
+      } else {
+        setOk(true);
+      }
     }
     setBusy(false);
+  };
+
+  const resend = async () => {
+    setResendBusy(true);
+    setResendMsg("");
+    const { error } = await supabase.auth.resend({ type: "signup", email });
+    setResendMsg(error ? `Failed: ${error.message}` : "Resent! Check your inbox and spam folder.");
+    setResendBusy(false);
   };
   return (
     <div
@@ -452,18 +471,26 @@ function AuthPage({ T, dark, setDark }) {
             ))}
           </div>
           {ok && (
-            <div
-              style={{
-                background: `${T.green}20`,
-                border: `1px solid ${T.green}`,
-                borderRadius: 8,
-                padding: "10px 14px",
-                marginBottom: 14,
-                color: T.green,
-                fontSize: 13,
-              }}
-            >
-              {ok}
+            <div style={{ background: `${T.green}15`, border: `1px solid ${T.green}50`, borderRadius: 10, padding: "14px 16px", marginBottom: 14 }}>
+              <div style={{ color: T.green, fontWeight: 700, fontSize: 14, marginBottom: 6 }}>
+                Account created!
+              </div>
+              <div style={{ color: T.text, fontSize: 12, lineHeight: 1.6, marginBottom: 10 }}>
+                A confirmation email was sent to <strong>{email}</strong>.<br />
+                If it doesn't arrive within a minute, check your <strong>spam/junk</strong> folder.
+              </div>
+              <button
+                onClick={resend}
+                disabled={resendBusy}
+                style={{ background: "transparent", border: `1px solid ${T.green}`, borderRadius: 6, color: T.green, fontSize: 12, padding: "5px 12px", cursor: "pointer", opacity: resendBusy ? 0.6 : 1 }}
+              >
+                {resendBusy ? "Sending…" : "Resend confirmation email"}
+              </button>
+              {resendMsg && (
+                <div style={{ marginTop: 8, fontSize: 11, color: resendMsg.startsWith("Failed") ? T.red : T.green }}>
+                  {resendMsg}
+                </div>
+              )}
             </div>
           )}
           {err && (
