@@ -1,7 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
+import { syncMatchesWithAPI } from "./api-football";
 
-// Replace these with your actual Supabase project credentials
-// from https://app.supabase.com → Settings → API
 const SUPABASE_URL =
   import.meta.env.VITE_SUPABASE_URL || "https://YOUR_PROJECT.supabase.co";
 const SUPABASE_ANON_KEY =
@@ -14,9 +13,15 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   },
 });
 
+export { syncMatchesWithAPI };
+
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
-export const signUp = (email, password, username) =>
-  supabase.auth.signUp({ email, password, options: { data: { username } } });
+export const signUp = (email, password, username, country = null) =>
+  supabase.auth.signUp({
+    email,
+    password,
+    options: { data: { username, ...(country ? { country } : {}) } },
+  });
 
 export const signIn = (email, password) =>
   supabase.auth.signInWithPassword({ email, password });
@@ -27,10 +32,7 @@ export const getSession = () => supabase.auth.getSession();
 
 const normalizeUsername = (value) => {
   if (!value || typeof value !== "string") return "user";
-  const cleaned = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_]/g, "");
+  const cleaned = value.trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
   return cleaned || "user";
 };
 
@@ -55,11 +57,7 @@ export const ensureProfile = async (userId, username = null) => {
   const { data, error } = await supabase
     .from("profiles")
     .upsert(
-      {
-        id: userId,
-        username: baseUsername,
-        display_name: username || baseUsername,
-      },
+      { id: userId, username: baseUsername, display_name: username || baseUsername },
       { onConflict: "id" },
     )
     .select()
@@ -95,38 +93,49 @@ export const getPrediction = async (userId, matchId) =>
     .maybeSingle();
 
 export const upsertPrediction = async (prediction) => {
-  // ⛔ Server-side lock check: fetch match from DB and verify deadline
+  // ⛔ Server-side lock check: use prediction_deadline from DB (server timestamp)
   const { data: match, error: matchError } = await supabase
     .from("matches")
-    .select("match_date, match_time, is_locked")
+    .select("prediction_deadline, status")
     .eq("id", prediction.match_id)
     .maybeSingle();
 
   if (matchError) return { data: null, error: matchError };
   if (!match) return { data: null, error: new Error("Match not found") };
 
-  // Check if match is explicitly locked
-  if (match.is_locked) {
-    return { data: null, error: new Error("Match is locked — predictions cannot be changed") };
+  // Block if match is already live or finished
+  if (match.status === "live" || match.status === "finished") {
+    return {
+      data: null,
+      error: new Error("Match has started — predictions cannot be changed"),
+    };
   }
 
-  // Check 30-min deadline using server DB time
-  const matchTime = new Date(`${match.match_date}T${match.match_time}`);
-  const deadline = new Date(matchTime.getTime() - 30 * 60000);
-  
-  // Use Supabase server time for the check
+  // Check 30-min deadline using server time
   const { data: serverTime, error: timeError } = await supabase
-    .rpc('get_server_time')
+    .rpc("get_server_time")
     .maybeSingle();
 
-  if (timeError) return { data: null, error: timeError };
-
-  const serverNow = serverTime?.server_time 
-    ? new Date(serverTime.server_time) 
-    : new Date(); // fallback to client time if RPC fails
-
-  if (serverNow >= deadline) {
-    return { data: null, error: new Error("Prediction deadline has passed (30 min before kick-off)") };
+  if (timeError) {
+    // Fall back to prediction_deadline comparison against client time
+    const deadline = new Date(match.prediction_deadline);
+    if (new Date() >= deadline) {
+      return {
+        data: null,
+        error: new Error("Prediction deadline has passed (30 min before kick-off)"),
+      };
+    }
+  } else {
+    const serverNow = serverTime?.server_time
+      ? new Date(serverTime.server_time)
+      : new Date();
+    const deadline = new Date(match.prediction_deadline);
+    if (serverNow >= deadline) {
+      return {
+        data: null,
+        error: new Error("Prediction deadline has passed (30 min before kick-off)"),
+      };
+    }
   }
 
   const { data, error } = await supabase
@@ -142,27 +151,33 @@ export const getUserGroupQuals = async (userId) =>
   supabase.from("group_qualifications").select("*").eq("user_id", userId);
 
 export const upsertGroupQual = async (qual) => {
-  // Check if any match in this group is locked (past deadline)
+  // Check if any match in this group has passed its prediction_deadline
   const { data: matches, error: matchError } = await supabase
     .from("matches")
-    .select("match_date, match_time, is_locked")
+    .select("prediction_deadline, status")
     .eq("group_id", qual.group_id);
 
   if (matchError) return { data: null, error: matchError };
 
-  // If any match in this group has started, lock all group predictions
-  const { data: serverTime } = await supabase.rpc('get_server_time').maybeSingle();
-  const serverNow = serverTime?.server_time ? new Date(serverTime.server_time) : new Date();
+  const { data: serverTime } = await supabase
+    .rpc("get_server_time")
+    .maybeSingle();
+  const serverNow = serverTime?.server_time
+    ? new Date(serverTime.server_time)
+    : new Date();
 
   const anyLocked = matches?.some((m) => {
-    if (m.is_locked) return true;
-    const matchTime = new Date(`${m.match_date}T${m.match_time}`);
-    const deadline = new Date(matchTime.getTime() - 30 * 60000);
-    return serverNow >= deadline;
+    if (m.status === "live" || m.status === "finished") return true;
+    return serverNow >= new Date(m.prediction_deadline);
   });
 
   if (anyLocked) {
-    return { data: null, error: new Error("Group predictions are locked — a match in this group has started") };
+    return {
+      data: null,
+      error: new Error(
+        "Group predictions are locked — a match in this group has started",
+      ),
+    };
   }
 
   return supabase
@@ -177,29 +192,35 @@ export const getUserKnockoutPreds = async (userId) =>
   supabase.from("knockout_predictions").select("*").eq("user_id", userId);
 
 export const upsertKnockoutPred = async (pred) => {
-  const { data: serverTime } = await supabase.rpc('get_server_time').maybeSingle();
-  const serverNow = serverTime?.server_time ? new Date(serverTime.server_time) : new Date();
+  const { data: serverTime } = await supabase
+    .rpc("get_server_time")
+    .maybeSingle();
+  const serverNow = serverTime?.server_time
+    ? new Date(serverTime.server_time)
+    : new Date();
 
-  // Check if any knockout match for this stage is locked
+  const stageMap = {
+    r32: "r32", r16: "r16", qf: "qf", sf: "sf", tp: "final", final: "final",
+  };
+  const dbStage = stageMap[pred.stage] || pred.stage;
+
   const { data: matches, error: matchError } = await supabase
     .from("matches")
-    .select("match_date, match_time, is_locked")
-    .eq("stage", pred.stage === "r32" ? "Round of 32" 
-      : pred.stage === "r16" ? "Round of 16"
-      : pred.stage === "qf" ? "Quarter Finals"
-      : pred.stage === "sf" ? "Semi Finals"
-      : pred.stage === "tp" ? "3rd Place Match"
-      : pred.stage === "final" ? "The Final" : pred.stage);
+    .select("prediction_deadline, status")
+    .eq("stage", dbStage);
+
+  if (matchError) return { data: null, error: matchError };
 
   const anyLocked = matches?.some((m) => {
-    if (m.is_locked) return true;
-    const matchTime = new Date(`${m.match_date}T${m.match_time}`);
-    const deadline = new Date(matchTime.getTime() - 30 * 60000);
-    return serverNow >= deadline;
+    if (m.status === "live" || m.status === "finished") return true;
+    return serverNow >= new Date(m.prediction_deadline);
   });
 
   if (anyLocked) {
-    return { data: null, error: new Error("Knockout predictions are locked for this stage") };
+    return {
+      data: null,
+      error: new Error("Knockout predictions are locked for this stage"),
+    };
   }
 
   return supabase
@@ -217,12 +238,32 @@ export const getCommunityOdds = async (matchId) =>
     .eq("match_id", matchId)
     .maybeSingle();
 
+// ─── Players ──────────────────────────────────────────────────────────────────
+// Fetch registered users from the leaderboard view.
+// Supports search (by username or country), pagination (page 0-based), and
+// configurable page size — suitable for millions of users via server-side filtering.
+export const getPlayers = async ({ page = 0, limit = 50, search = "" } = {}) => {
+  let q = supabase
+    .from("leaderboard")
+    .select("*", { count: "exact" })
+    .order("total_points", { ascending: false })
+    .order("accuracy_pct", { ascending: false })
+    .range(page * limit, page * limit + limit - 1);
+
+  if (search?.trim()) {
+    q = q.or(`username.ilike.%${search.trim()}%,country.ilike.%${search.trim()}%`);
+  }
+
+  return q;
+};
+
 // ─── Leaderboard ──────────────────────────────────────────────────────────────
-export const getLeaderboard = async (limit = 50) =>
+export const getLeaderboard = async (limit = 100) =>
   supabase
     .from("leaderboard")
-    .select("*, profiles(username, display_name)")
+    .select("*")
     .order("total_points", { ascending: false })
+    .order("accuracy_pct", { ascending: false })
     .limit(limit);
 
 // ─── Admin helpers ────────────────────────────────────────────────────────────
@@ -254,7 +295,7 @@ export const adminGetAllPredictions = async ({
   let q = supabase
     .from("predictions")
     .select(
-      "*, profiles(username,display_name), matches(stage,group_id,home_team,away_team,match_date,home_score,away_score)",
+      "*, profiles(username,display_name), matches(stage,group_id,home_team,away_team,match_date,actual_home_score,actual_away_score)",
     );
   if (matchId) q = q.eq("match_id", matchId);
   if (stage) q = q.eq("matches.stage", stage);
@@ -266,78 +307,109 @@ export const getFinishedMatches = async () =>
   supabase
     .from("matches")
     .select("*")
-    .not("home_score", "is", null)
-    .not("away_score", "is", null);
+    .eq("status", "finished");
 
-export const updatePredictionResults = async () => {
-  const { data: matches, error: matchError } = await getFinishedMatches();
+export const getLiveMatches = async () =>
+  supabase
+    .from("matches")
+    .select("*")
+    .eq("status", "live");
+
+// Flat scoring constants (configurable here or via DB scoring_config table)
+export const SCORING = {
+  EXACT: 10,    // Predicted exact scoreline
+  CORRECT: 5,   // Predicted correct winner/draw
+  WRONG: 0,
+};
+
+export const updatePredictionResults = async (matchId = null) => {
+  // Score a specific match (when it just finished) or all finished matches
+  let query = supabase.from("matches").select("*").eq("status", "finished");
+  if (matchId) query = query.eq("id", matchId);
+
+  const { data: matches, error: matchError } = await query;
   if (matchError) return { error: matchError };
 
-  let totalCorrect = 0;
-  let totalUsers = 0;
+  let totalScored = 0;
+  let totalSkipped = 0;
+  const errors = [];
 
   for (const match of matches) {
+    if (match.actual_home_score == null || match.actual_away_score == null) {
+      totalSkipped++;
+      continue;
+    }
+
+    // Only score predictions that haven't been scored yet
     const { data: predictions, error: predError } = await supabase
       .from("predictions")
       .select("*")
-      .eq("match_id", match.id);
+      .eq("match_id", match.id)
+      .is("result_status", null);
 
-    if (predError) continue;
+    if (predError) {
+      errors.push({ matchId: match.id, error: predError.message });
+      continue;
+    }
 
-    const actualWinner = match.home_score > match.away_score ? "home" 
-                       : match.away_score > match.home_score ? "away" 
-                       : "draw";
+    if (!predictions?.length) continue;
+
+    const actualWinner =
+      match.actual_home_score > match.actual_away_score
+        ? "home"
+        : match.actual_away_score > match.actual_home_score
+          ? "away"
+          : "draw";
 
     for (const pred of predictions) {
-      const userWinner = pred.predicted_home_score > pred.predicted_away_score ? "home"
-                       : pred.predicted_away_score > pred.predicted_home_score ? "away"
-                       : "draw";
+      const userWinner =
+        pred.predicted_home_score > pred.predicted_away_score
+          ? "home"
+          : pred.predicted_away_score > pred.predicted_home_score
+            ? "away"
+            : "draw";
 
-      const isCorrect = userWinner === actualWinner;
-      const pointsEarned = isCorrect ? 10 : 0;
+      const isExact =
+        pred.predicted_home_score === match.actual_home_score &&
+        pred.predicted_away_score === match.actual_away_score;
+      const isCorrect = !isExact && userWinner === actualWinner;
 
-      await supabase
+      const resultStatus = isExact ? "exact" : isCorrect ? "correct" : "wrong";
+      const pointsEarned = isExact ? SCORING.EXACT : isCorrect ? SCORING.CORRECT : SCORING.WRONG;
+
+      const { error: updateErr } = await supabase
         .from("predictions")
-        .update({
-          is_correct: isCorrect,
-          points_earned: pointsEarned,
-          final_score: `${match.home_score}-${match.away_score}`,
-        })
+        .update({ result_status: resultStatus, points_earned: pointsEarned })
         .eq("id", pred.id);
 
-      if (isCorrect) totalCorrect++;
-      totalUsers++;
+      if (updateErr) {
+        errors.push({ predId: pred.id, error: updateErr.message });
+      } else {
+        totalScored++;
+      }
     }
   }
 
-  return { data: { totalCorrect, totalUsers }, error: null };
+  console.log(`[scoring] ✅ Scored ${totalScored} predictions, skipped ${totalSkipped} matches, ${errors.length} errors`);
+  return { data: { totalScored, totalSkipped, errors }, error: null };
 };
 
-export const updateLeaderboard = async () => {
-  const { data: users, error } = await supabase
-    .from("profiles")
-    .select("id, username");
+// Refresh a single user's aggregated stats from their predictions (idempotent)
+export const refreshUserStats = async (userId) => {
+  const { data: preds, error } = await supabase
+    .from("predictions")
+    .select("result_status, points_earned")
+    .eq("user_id", userId)
+    .not("result_status", "is", null);
 
   if (error) return { error };
 
-  for (const user of users) {
-    const { data: predictions } = await supabase
-      .from("predictions")
-      .select("points_earned")
-      .eq("user_id", user.id)
-      .eq("is_correct", true);
+  const totalPoints = preds.reduce((s, p) => s + (p.points_earned || 0), 0);
+  const totalBets = preds.length;
+  const correctBets = preds.filter((p) => p.result_status === "exact" || p.result_status === "correct").length;
 
-    const totalPoints = predictions?.reduce((sum, p) => sum + (p.points_earned || 0), 0) || 0;
-
-    await supabase
-      .from("leaderboard")
-      .upsert({
-        user_id: user.id,
-        total_points: totalPoints,
-        correct_predictions: predictions?.length || 0,
-      })
-      .eq("user_id", user.id);
-  }
-
-  return { data: null, error: null };
+  return supabase
+    .from("profiles")
+    .update({ total_points: totalPoints, total_bets: totalBets, correct_bets: correctBets, updated_at: new Date().toISOString() })
+    .eq("id", userId);
 };
