@@ -797,27 +797,47 @@ function UserApp({ T, dark, setDark }) {
     triggerSync();
   }, [profile]);
 
-  // ─── 2. Fetch Matches from Database ─────────────────────────────────────────
+  // ─── 2. Fetch Matches + subscribe to real-time updates ──────────────────────
   useEffect(() => {
     if (!profile) return;
     loadMatches();
     loadAll();
     getLeaderboard(500).then(({ data }) => setLB(formatLeaderboard(data || [])));
-    
-    // Auto-refresh leaderboard every 60s
-    const lbInterval = setInterval(() => {
-      getLeaderboard(500).then(({ data }) => setLB(formatLeaderboard(data || [])));
-    }, 60000);
-    
-    // Auto-refresh matches every 2min
-    const matchInterval = setInterval(() => {
-      loadMatches();
-      loadAll();
-    }, 120000);
-    
+
+    // Supabase Realtime: push leaderboard refresh when any profile row changes.
+    // The DB trigger on_match_finished calls refresh_user_full_stats() which
+    // updates profiles.total_points — that UPDATE fires this subscription.
+    const lbChannel = supabase
+      .channel("leaderboard-realtime")
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "profiles" },
+        () => getLeaderboard(500).then(({ data }) => setLB(formatLeaderboard(data || []))),
+      )
+      .subscribe();
+
+    // Supabase Realtime: reload matches when status/score changes (live results).
+    const matchChannel = supabase
+      .channel("matches-realtime")
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "matches" },
+        () => { loadMatches(); loadAll(); },
+      )
+      .subscribe();
+
+    // Polling fallback keeps data fresh if Realtime is disconnected.
+    const lbFallback    = setInterval(
+      () => getLeaderboard(500).then(({ data }) => setLB(formatLeaderboard(data || []))),
+      120000,
+    );
+    const matchFallback = setInterval(() => { loadMatches(); loadAll(); }, 180000);
+
     return () => {
-      clearInterval(lbInterval);
-      clearInterval(matchInterval);
+      supabase.removeChannel(lbChannel);
+      supabase.removeChannel(matchChannel);
+      clearInterval(lbFallback);
+      clearInterval(matchFallback);
     };
   }, [profile]);
 
@@ -1070,6 +1090,7 @@ const savePrediction = async (gId, matchId, hs, as) => {
     { id: "bracket", icon: "🌐", label: "Full Bracket" },
     { id: "leaderboard", icon: "🏅", label: "Leaderboard" },
     { id: "mypreds", icon: "📋", label: "My Predictions" },
+    { id: "help", icon: "❓", label: "How to Play" },
   ];
   const ctx = {
     T,
@@ -1267,6 +1288,7 @@ const savePrediction = async (gId, matchId, hs, as) => {
             {view === "bracket" && <FullBracket />}
             {view === "leaderboard" && <LeaderboardView />}
             {view === "mypreds" && <MyPredictions />}
+            {view === "help" && <HelpView />}
           </main>
 
           {/* ── Mobile bottom navigation bar ──────────────────────────────── */}
@@ -3893,6 +3915,485 @@ function FullBracket() {
 }
 
 const PAGE_SIZE = 50;
+
+// ─── Help / How to Play ───────────────────────────────────────────────────────
+function HelpView() {
+  const { T, isMobile } = useU();
+  const [open, setOpen] = useState(null);
+
+  const Section = ({ id, icon, title, color, children }) => {
+    const isOpen = open === id;
+    return (
+      <div
+        style={{
+          background: T.surf,
+          border: `1px solid ${isOpen ? color + "55" : T.border}`,
+          borderRadius: 12,
+          marginBottom: 10,
+          overflow: "hidden",
+          transition: "border-color .2s",
+        }}
+      >
+        <button
+          onClick={() => setOpen(isOpen ? null : id)}
+          style={{
+            width: "100%",
+            padding: "13px 16px",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            background: isOpen ? color + "12" : "transparent",
+            cursor: "pointer",
+            textAlign: "left",
+          }}
+        >
+          <span style={{ fontSize: 20 }}>{icon}</span>
+          <span
+            style={{
+              fontFamily: "Oswald",
+              fontSize: 15,
+              fontWeight: 700,
+              color: isOpen ? color : T.text,
+              flex: 1,
+            }}
+          >
+            {title}
+          </span>
+          <span style={{ fontSize: 14, color: T.muted }}>
+            {isOpen ? "▲" : "▼"}
+          </span>
+        </button>
+        {isOpen && (
+          <div
+            style={{
+              padding: "0 16px 16px",
+              borderTop: `1px solid ${color}22`,
+            }}
+          >
+            {children}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const Row = ({ icon, label, pts, color }) => (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "9px 0",
+        borderBottom: `1px solid ${T.border}22`,
+      }}
+    >
+      <span style={{ fontSize: 16 }}>{icon}</span>
+      <span style={{ flex: 1, fontSize: 13, color: T.text }}>{label}</span>
+      <span
+        style={{
+          fontFamily: "Oswald",
+          fontSize: 14,
+          fontWeight: 700,
+          color: color || T.accent,
+          background: (color || T.accent) + "18",
+          padding: "2px 9px",
+          borderRadius: 7,
+        }}
+      >
+        {pts}
+      </span>
+    </div>
+  );
+
+  const Tip = ({ children }) => (
+    <div
+      style={{
+        display: "flex",
+        gap: 8,
+        padding: "8px 10px",
+        background: T.surf2,
+        borderRadius: 8,
+        marginTop: 8,
+        fontSize: 12,
+        color: T.text,
+        lineHeight: 1.5,
+      }}
+    >
+      <span style={{ flexShrink: 0 }}>💡</span>
+      <span>{children}</span>
+    </div>
+  );
+
+  const stepStyle = {
+    display: "flex",
+    gap: 12,
+    padding: "10px 0",
+    borderBottom: `1px solid ${T.border}22`,
+    alignItems: "flex-start",
+  };
+
+  const numStyle = (color) => ({
+    width: 28,
+    height: 28,
+    borderRadius: "50%",
+    background: color + "22",
+    color: color,
+    border: `1px solid ${color}44`,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontFamily: "Oswald",
+    fontWeight: 700,
+    fontSize: 13,
+    flexShrink: 0,
+  });
+
+  return (
+    <div className="fade-up">
+      {/* ── Hero ── */}
+      <div
+        style={{
+          background: `linear-gradient(135deg, ${T.accent}18 0%, ${T.blue}12 100%)`,
+          border: `1px solid ${T.accent}33`,
+          borderRadius: 14,
+          padding: isMobile ? "18px 16px" : "22px 24px",
+          marginBottom: 20,
+        }}
+      >
+        <div
+          style={{
+            fontFamily: "Oswald",
+            fontSize: isMobile ? 22 : 28,
+            fontWeight: 700,
+            color: T.accent,
+            marginBottom: 6,
+          }}
+        >
+          How to Play ⚽🏆
+        </div>
+        <p style={{ fontSize: 13, color: T.muted, lineHeight: 1.6, marginBottom: 12 }}>
+          This is a <strong style={{ color: T.text }}>tournament bracket prediction game</strong>.
+          You predict which teams advance at each stage of the World Cup — not just match scores.
+          Score predictions are optional bonus points.
+        </p>
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          {[
+            { label: "Skip match scores ✔", c: T.green },
+            { label: "Focus on brackets ✔", c: T.green },
+            { label: "Play your own way ✔", c: T.green },
+          ].map(({ label, c }) => (
+            <span
+              key={label}
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                padding: "3px 9px",
+                borderRadius: 8,
+                background: c + "20",
+                color: c,
+                border: `1px solid ${c}44`,
+              }}
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Accordion sections ── */}
+
+      <Section id="overview" icon="🎮" title="Overview — Two Ways to Play" color={T.accent}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12, marginTop: 12 }}>
+          <div
+            style={{
+              background: `${T.green}10`,
+              border: `1px solid ${T.green}33`,
+              borderRadius: 10,
+              padding: 14,
+            }}
+          >
+            <div style={{ fontFamily: "Oswald", fontSize: 14, color: T.green, marginBottom: 6 }}>
+              🎮 Option A — Smart Tournament Player
+            </div>
+            <p style={{ fontSize: 12, color: T.text, lineHeight: 1.6, marginBottom: 8 }}>
+              Skip match-by-match predictions. Focus on:
+            </p>
+            {["Group winners & runners-up", "Teams reaching Round of 32", "Teams advancing in knockouts", "Who wins the World Cup"].map((t) => (
+              <div key={t} style={{ fontSize: 12, color: T.muted, padding: "3px 0", display: "flex", gap: 6 }}>
+                <span style={{ color: T.green }}>✔</span> {t}
+              </div>
+            ))}
+            <div
+              style={{
+                marginTop: 10,
+                fontSize: 11,
+                fontWeight: 700,
+                color: T.green,
+                background: `${T.green}20`,
+                borderRadius: 7,
+                padding: "4px 8px",
+                display: "inline-block",
+              }}
+            >
+              Recommended · Main scoring system
+            </div>
+          </div>
+          <div
+            style={{
+              background: `${T.blue}10`,
+              border: `1px solid ${T.blue}33`,
+              borderRadius: 10,
+              padding: 14,
+            }}
+          >
+            <div style={{ fontFamily: "Oswald", fontSize: 14, color: T.blue, marginBottom: 6 }}>
+              ⚽ Option B — Full Prediction Mode
+            </div>
+            <p style={{ fontSize: 12, color: T.text, lineHeight: 1.6, marginBottom: 8 }}>
+              Predict everything for maximum points:
+            </p>
+            {["Every group match score", "Group qualifiers", "All knockout stages", "Champion + finalists"].map((t) => (
+              <div key={t} style={{ fontSize: 12, color: T.muted, padding: "3px 0", display: "flex", gap: 6 }}>
+                <span style={{ color: T.blue }}>✔</span> {t}
+              </div>
+            ))}
+            <div
+              style={{
+                marginTop: 10,
+                fontSize: 11,
+                fontWeight: 700,
+                color: T.blue,
+                background: `${T.blue}20`,
+                borderRadius: 7,
+                padding: "4px 8px",
+                display: "inline-block",
+              }}
+            >
+              More detailed · Bonus points available
+            </div>
+          </div>
+        </div>
+        <Tip>You do NOT need to predict every match score. Score predictions are optional bonus points only.</Tip>
+      </Section>
+
+      <Section id="scoring" icon="🏆" title="How Points Are Scored" color={T.accent}>
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontFamily: "Oswald", fontSize: 12, color: T.muted, letterSpacing: 1, marginBottom: 6 }}>
+            GROUP STAGE
+          </div>
+          <Row icon="🥇" label="Correct 1st place team per group" pts="+5 pts" color={T.green} />
+          <Row icon="🥈" label="Correct 2nd place team per group" pts="+5 pts" color={T.green} />
+          <Row icon="🎯" label="Both teams correct (any order) — bonus" pts="+3 pts" color={T.green} />
+
+          <div style={{ fontFamily: "Oswald", fontSize: 12, color: T.muted, letterSpacing: 1, marginTop: 14, marginBottom: 6 }}>
+            KNOCKOUT STAGES (MAIN GAME)
+          </div>
+          <Row icon="⚔️" label="Round of 32 — correct team advances" pts="+2 pts" color={T.blue} />
+          <Row icon="🏟" label="Round of 16 — correct team advances" pts="+2 pts" color={T.blue} />
+          <Row icon="⚡" label="Quarter Finals — correct team advances" pts="+3 pts" color={T.orange} />
+          <Row icon="🌟" label="Semi Finals — correct finalist" pts="+5 pts" color={T.accent} />
+          <Row icon="🥉" label="3rd Place Match — correct winner" pts="+2 pts" color={T.muted} />
+          <Row icon="🏆" label="Champion — correct World Cup winner" pts="+10 pts" color={T.accent} />
+
+          <div style={{ fontFamily: "Oswald", fontSize: 12, color: T.muted, letterSpacing: 1, marginTop: 14, marginBottom: 6 }}>
+            BONUS ONLY — SCORE PREDICTIONS
+          </div>
+          <Row icon="🎯" label="Exact match score (e.g. 2-1 correct)" pts="+3 pts" color={T.muted} />
+          <Row icon="✅" label="Correct outcome (win/draw/loss)" pts="+1 pt" color={T.muted} />
+          <Row icon="❌" label="Wrong prediction" pts="0 pts" color={T.red} />
+        </div>
+        <Tip>
+          Round of 32 to Final is where most points are earned. A perfect bracket through the knockouts can score
+          far more than predicting every group match score.
+        </Tip>
+      </Section>
+
+      <Section id="steps" icon="📋" title="How to Play — Step by Step" color={T.blue}>
+        <div style={{ marginTop: 12 }}>
+          {[
+            {
+              n: "1",
+              color: T.green,
+              title: "Go to Qualifiers tab",
+              body: "Pick the 1st and 2nd place team from each group (A to L). Then pick your 8 best third-place teams. These determine who enters the Round of 32.",
+            },
+            {
+              n: "2",
+              color: T.blue,
+              title: "Pick Round of 32 winners",
+              body: "The bracket fills in based on your group picks. Select who you think wins each of the 16 Round of 32 matches.",
+            },
+            {
+              n: "3",
+              color: T.blue,
+              title: "Continue through the bracket",
+              body: "Round of 16 → Quarter Finals → Semi Finals. Each stage auto-fills with your previous picks.",
+            },
+            {
+              n: "4",
+              color: T.accent,
+              title: "Pick the Champion 🏆",
+              body: "Go to The Final tab and choose your World Cup winner.",
+            },
+            {
+              n: "5",
+              color: T.muted,
+              title: "(Optional) Score Predictions",
+              body: "Visit the Score Preds tab to predict match scores for bonus points. Skip this if you prefer to focus on the bracket.",
+            },
+          ].map(({ n, color, title, body }) => (
+            <div key={n} style={stepStyle}>
+              <div style={numStyle(color)}>{n}</div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13, color: T.text, marginBottom: 3 }}>{title}</div>
+                <div style={{ fontSize: 12, color: T.muted, lineHeight: 1.6 }}>{body}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      <Section id="faq" icon="❓" title="Common Questions" color={T.orange}>
+        {[
+          {
+            q: "Do I need to predict every match?",
+            a: "No. Score predictions are optional bonus points. You can fully compete without predicting a single match score.",
+          },
+          {
+            q: "What matters most for winning the leaderboard?",
+            a: "Knockout predictions — especially who reaches the Semi Finals and who wins the Final. The leaderboard is ranked by total points, then tiebroken by knockout depth.",
+          },
+          {
+            q: "Can I only predict the winner and nothing else?",
+            a: "Yes. Head to The Final tab and pick your champion. Every prediction you add on top of that just adds more points.",
+          },
+          {
+            q: "Why are match score predictions optional?",
+            a: "This is a tournament prediction game, not a score-guessing game. The main competition is bracket accuracy — who advances at each stage.",
+          },
+          {
+            q: "Can I change my predictions?",
+            a: "Yes — group qualifier picks and knockout bracket picks can always be updated. Match score predictions lock 30 minutes before kick-off.",
+          },
+          {
+            q: "I joined after the tournament started. Can I still play?",
+            a: "Yes. Matches already played are locked for score predictions, but you can freely set your qualifier picks and full knockout bracket for all upcoming stages.",
+          },
+        ].map(({ q, a }) => (
+          <div
+            key={q}
+            style={{
+              padding: "10px 0",
+              borderBottom: `1px solid ${T.border}22`,
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 700, color: T.text, marginBottom: 4 }}>
+              {q}
+            </div>
+            <div style={{ fontSize: 12, color: T.muted, lineHeight: 1.6 }}>{a}</div>
+          </div>
+        ))}
+      </Section>
+
+      <Section id="nav" icon="🗺" title="Navigation Guide" color={T.blue}>
+        <div style={{ marginTop: 10 }}>
+          {[
+            { icon: "🏠", label: "Home", desc: "Overview: your rank, points, and prediction progress" },
+            { icon: "⚽", label: "Score Preds", desc: "Optional: predict match scores for bonus points. Grouped A–L" },
+            { icon: "📋", label: "Qualifiers", desc: "Pick 1st & 2nd from each group + best 8 third-place teams" },
+            { icon: "32", label: "Round of 32", desc: "Pick winners of each R32 match (bracket auto-filled)" },
+            { icon: "16", label: "Round of 16", desc: "Pick R16 winners (filled from your R32 picks)" },
+            { icon: "⚡", label: "Quarter Finals", desc: "+3 pts per correct pick — key stage" },
+            { icon: "🌟", label: "Semi Finals", desc: "+5 pts per correct finalist" },
+            { icon: "🏆", label: "The Final", desc: "Pick the World Cup champion — +10 pts" },
+            { icon: "🏅", label: "Leaderboard", desc: "Global rankings, updated live after matches" },
+            { icon: "📋", label: "My Predictions", desc: "Full history of all your predictions and results" },
+          ].map(({ icon, label, desc }) => (
+            <div
+              key={label}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 10,
+                padding: "8px 0",
+                borderBottom: `1px solid ${T.border}22`,
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: "Oswald",
+                  fontWeight: 700,
+                  fontSize: 13,
+                  minWidth: 36,
+                  color: T.accent,
+                }}
+              >
+                {icon}
+              </span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 12, color: T.text }}>{label}</div>
+                <div style={{ fontSize: 11, color: T.muted }}>{desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      <Section id="tips" icon="🧠" title="Tips to Win" color={T.green}>
+        <div style={{ marginTop: 8 }}>
+          {[
+            "Focus on strong teams reaching the knockouts — that's where points multiply fast.",
+            "Don't agonise over early group match scores. A correct bracket pick earns more than any bonus.",
+            "Use your group picks carefully — they cascade into the R32 bracket.",
+            "Correct Semi Final picks (+5 each) and the champion (+10) can decide the leaderboard.",
+            "Save energy for Round of 32 and beyond. Even casual picks here beat heavy score-grinding.",
+          ].map((tip, i) => (
+            <div
+              key={i}
+              style={{
+                display: "flex",
+                gap: 10,
+                padding: "8px 0",
+                borderBottom: `1px solid ${T.border}22`,
+                fontSize: 13,
+                color: T.text,
+                lineHeight: 1.6,
+              }}
+            >
+              <span style={{ color: T.green, fontWeight: 700, flexShrink: 0 }}>{i + 1}.</span>
+              {tip}
+            </div>
+          ))}
+        </div>
+        <div
+          style={{
+            marginTop: 14,
+            padding: "14px 16px",
+            background: `${T.accent}12`,
+            border: `1px solid ${T.accent}33`,
+            borderRadius: 10,
+            fontSize: 13,
+            color: T.text,
+            lineHeight: 1.7,
+            textAlign: "center",
+          }}
+        >
+          <div style={{ fontFamily: "Oswald", fontSize: 16, color: T.accent, marginBottom: 4 }}>
+            Play your way. Enjoy the tournament. ⚽🔥
+          </div>
+          Casual users can do just the champion pick. Competitive users can fill the full bracket.
+          Everyone competes on the same leaderboard.
+        </div>
+      </Section>
+    </div>
+  );
+}
 
 function LeaderboardView() {
   const { T, leaderboard, profile, isMobile } = useU();

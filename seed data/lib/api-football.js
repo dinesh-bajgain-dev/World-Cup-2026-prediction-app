@@ -60,8 +60,10 @@ export const syncMatchesWithAPI = async () => {
     console.log("🔄 Starting API-Football sync...");
 
     // Fetch all World Cup 2026 fixtures from API
+    // Supports both direct api-sports.io key (x-apisports-key) and RapidAPI key
     const response = await fetch(`${BASE_URL}/fixtures?league=1&season=2026`, {
       headers: {
+        "x-apisports-key": API_KEY,
         "x-rapidapi-key": API_KEY,
         "x-rapidapi-host": "v3.football.api-sports.io",
       },
@@ -82,30 +84,29 @@ export const syncMatchesWithAPI = async () => {
     console.log(`📦 Received ${fixtures.length} fixtures from API.`);
 
     // Load existing matches from DB to build lookup by team names
+    // NOTE: include `status` so we can detect newly-finished transitions accurately
     const { data: existingMatches, error: dbError } = await supabase
       .from("matches")
-      .select("id, home_team, away_team, match_date");
+      .select("id, home_team, away_team, match_date, status");
 
     if (dbError) {
       console.error("❌ Failed to load existing matches:", dbError.message);
       return { success: false, error: dbError.message };
     }
 
-    // Build lookup: "HomeTeam_AwayTeam" → match id
+    // Build lookup: "HomeTeam_AwayTeam" → { id, status }
     const matchLookup = {};
+    const currentStatusMap = {};
     existingMatches?.forEach((m) => {
       const key = `${normalizeTeam(m.home_team)}_${normalizeTeam(m.away_team)}`;
       matchLookup[key] = m.id;
+      currentStatusMap[m.id] = m.status ?? "upcoming";
     });
 
     let synced = 0;
     let skipped = 0;
     const errors = [];
-    const newlyFinished = []; // track match IDs that just became finished
-
-    // Load current DB statuses so we can detect newly-finished transitions
-    const currentStatusMap = {};
-    existingMatches?.forEach((m) => { currentStatusMap[m.id] = m.status ?? "upcoming"; });
+    const newlyFinished = [];
 
     for (const fixture of fixtures) {
       const homeTeam = normalizeTeam(fixture.teams.home.name);
