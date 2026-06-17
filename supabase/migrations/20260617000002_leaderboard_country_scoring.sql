@@ -55,7 +55,17 @@ BEGIN
 END $$;
 
 -- 3. Drop and recreate leaderboard view with all required columns
-DROP VIEW IF EXISTS public.leaderboard;
+--    Handles the case where leaderboard exists as a table, view, or materialized view
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_matviews        WHERE schemaname = 'public' AND matviewname = 'leaderboard') THEN
+    EXECUTE 'DROP MATERIALIZED VIEW public.leaderboard';
+  ELSIF EXISTS (SELECT 1 FROM information_schema.views WHERE table_schema = 'public' AND table_name = 'leaderboard') THEN
+    EXECUTE 'DROP VIEW public.leaderboard';
+  ELSIF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'leaderboard' AND table_type = 'BASE TABLE') THEN
+    EXECUTE 'DROP TABLE public.leaderboard CASCADE';
+  END IF;
+END $$;
 
 CREATE OR REPLACE VIEW public.leaderboard AS
 SELECT
@@ -78,10 +88,18 @@ SELECT
   RANK() OVER (ORDER BY p.total_points DESC, p.correct_bets DESC) AS rank
 FROM public.profiles p
 LEFT JOIN public.predictions pr ON pr.user_id = p.id
-WHERE p.role = 'user'
+WHERE COALESCE(p.role, 'user') != 'admin'
 GROUP BY
   p.id, p.username, p.display_name, p.avatar_url, p.country,
   p.total_points, p.total_bets, p.correct_bets;
+
+-- Grant PostgREST access to the leaderboard view
+GRANT SELECT ON public.leaderboard TO anon, authenticated;
+
+-- Allow all users to read public profile data (needed for leaderboard view to return rows)
+DROP POLICY IF EXISTS profiles_select_all ON public.profiles;
+CREATE POLICY profiles_select_all ON public.profiles
+  FOR SELECT USING (TRUE);
 
 -- 4. Auto-scoring DB function: score all unscored predictions for a finished match
 --    Called by the trigger below whenever a match transitions to 'finished'

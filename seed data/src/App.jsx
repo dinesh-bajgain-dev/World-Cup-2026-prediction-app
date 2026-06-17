@@ -404,8 +404,11 @@ function AuthPage({ T, dark, setDark }) {
         // Real error (e.g. email already registered, weak password)
         setErr(error.message);
       } else {
-        // Account created (or email error that we handle ourselves).
-        // Always send our own OTP so email ownership is verified.
+        // Account created. When Supabase email confirmation is disabled it
+        // immediately returns a session — sign out so the user stays on this
+        // page during OTP verification. signIn() after OTP creates the real session.
+        await signOut();
+
         const result = await sendOTP();
         if (result.success) {
           setOtpStep(true);
