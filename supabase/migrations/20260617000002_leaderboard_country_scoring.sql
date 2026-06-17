@@ -5,8 +5,13 @@
 
 -- 1. Add columns to profiles that may be missing on older DBs
 ALTER TABLE public.profiles
-  ADD COLUMN IF NOT EXISTS country    TEXT,
-  ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+  ADD COLUMN IF NOT EXISTS country      TEXT,
+  ADD COLUMN IF NOT EXISTS avatar_url   TEXT,
+  ADD COLUMN IF NOT EXISTS role         TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin')),
+  ADD COLUMN IF NOT EXISTS total_points INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS total_bets   INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS correct_bets INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 -- 2. Scoring config table (configurable points, no code deploy required)
 CREATE TABLE IF NOT EXISTS public.scoring_config (
