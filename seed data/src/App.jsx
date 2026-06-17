@@ -1545,245 +1545,455 @@ function HomeView() {
   );
 }
 
-function GroupPredictions() {
-  const { T, matchPreds, savePrediction, matches, isMobile } = useU();
-  const [ag, setAg] = useState("A");
-  const [af, setAf] = useState(0);
-  const fixtures = GF[ag];
-  const match = fixtures[af];
+// ─── Swipe gesture hook (touch + mouse, no external deps) ───────────────────
+function useSwipeGesture({ onCommit, disabled = false, threshold = 55 }) {
+  const startRef = useRef(null);
+  const deltaRef = useRef({ x: 0, y: 0 });
+  const [delta, setDelta] = useState({ x: 0, y: 0, active: false });
+
+  const startDrag = (x, y) => {
+    if (disabled) return;
+    startRef.current = { x, y };
+    deltaRef.current = { x: 0, y: 0 };
+    setDelta({ x: 0, y: 0, active: false });
+  };
+  const moveDrag = (x, y) => {
+    if (!startRef.current || disabled) return;
+    const dx = x - startRef.current.x;
+    const dy = y - startRef.current.y;
+    deltaRef.current = { x: dx, y: dy };
+    setDelta({ x: dx, y: dy, active: true });
+  };
+  const endDrag = () => {
+    if (!startRef.current) return;
+    const { x: dx, y: dy } = deltaRef.current;
+    const absX = Math.abs(dx), absY = Math.abs(dy);
+    let outcome = null;
+    if (absX > absY && absX >= threshold) outcome = dx > 0 ? "away" : "home";
+    else if (dy < -threshold && absY > absX) outcome = "draw";
+    startRef.current = null;
+    deltaRef.current = { x: 0, y: 0 };
+    setDelta({ x: 0, y: 0, active: false });
+    if (outcome && !disabled) onCommit?.(outcome);
+  };
+  const cancelDrag = () => {
+    startRef.current = null;
+    deltaRef.current = { x: 0, y: 0 };
+    setDelta({ x: 0, y: 0, active: false });
+  };
+
+  const handlers = {
+    onTouchStart: (e) => startDrag(e.touches[0].clientX, e.touches[0].clientY),
+    onTouchMove: (e) => moveDrag(e.touches[0].clientX, e.touches[0].clientY),
+    onTouchEnd: endDrag,
+    onMouseDown: (e) => { e.preventDefault(); startDrag(e.clientX, e.clientY); },
+    onMouseMove: (e) => { if (startRef.current) moveDrag(e.clientX, e.clientY); },
+    onMouseUp: endDrag,
+    onMouseLeave: cancelDrag,
+  };
+  return { delta, handlers };
+}
+
+// ─── Swipeable match prediction card ─────────────────────────────────────────
+function SwipeMatchCard({ match, groupId, committed, committedOutcome, onCommit, T }) {
+  const { delta, handlers } = useSwipeGesture({ onCommit, disabled: committed });
+  const { x: dx, y: dy, active } = delta;
+
+  const absX = Math.abs(dx), absY = Math.abs(dy);
+  const dragDecision = active
+    ? absX > absY ? (dx < -35 ? "home" : dx > 35 ? "away" : null) : (dy < -35 ? "draw" : null)
+    : null;
+  const displayOutcome = committed ? committedOutcome : dragDecision;
+
+  const cardTransform = committed
+    ? committedOutcome === "home"  ? "translateX(-140%) rotate(-18deg)"
+    : committedOutcome === "away" ? "translateX(140%) rotate(18deg)"
+    : "translateY(-130%)"
+    : active
+    ? `translateX(${dx}px) translateY(${dy < 0 ? dy * 0.25 : 0}px) rotate(${dx * 0.04}deg)`
+    : "none";
+  const cardTransition = committed
+    ? "transform 0.45s cubic-bezier(0.36,0.66,0.04,1)"
+    : active ? "none" : "transform 0.3s ease-out";
+
+  const overlayStrength = committed
+    ? 0.9
+    : active ? Math.min(0.82, Math.max(absX, absY * 2.5) / 100) : 0;
+  const OVERLAY = {
+    home: { color: "#10b981", label: `${match.home} Wins ✅` },
+    away: { color: "#3b82f6", label: `${match.away} Wins ✅` },
+    draw: { color: "#6b7280", label: "🤝 Draw" },
+  };
+  const venue = VENUES[match.venue] || match.venue || "";
+
+  return (
+    <div
+      {...handlers}
+      style={{
+        borderRadius: 24, background: T.surf, border: `1px solid ${T.border}`,
+        userSelect: "none", touchAction: "none",
+        cursor: committed ? "default" : "grab",
+        transform: cardTransform, transition: cardTransition,
+        willChange: "transform", position: "relative", overflow: "hidden",
+        WebkitUserSelect: "none",
+      }}
+    >
+      {/* Directional overlay */}
+      {displayOutcome && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 10,
+          background: `${OVERLAY[displayOutcome].color}dd`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          opacity: overlayStrength, transition: active ? "none" : "opacity 0.2s",
+          pointerEvents: "none",
+        }}>
+          <span style={{ fontSize: 26, fontFamily: "Oswald", fontWeight: 700, color: "#fff", textAlign: "center", padding: "0 20px" }}>
+            {OVERLAY[displayOutcome].label}
+          </span>
+        </div>
+      )}
+
+      {/* Card body */}
+      <div style={{ padding: "24px 20px 14px" }}>
+        {/* Group + matchday badges */}
+        <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: 22 }}>
+          <span style={{ fontFamily: "Oswald", fontSize: 11, color: T.accent, background: `${T.accent}18`, padding: "3px 12px", borderRadius: 20, border: `1px solid ${T.accent}44`, letterSpacing: 1 }}>
+            GROUP {groupId}
+          </span>
+          <span style={{ fontFamily: "Oswald", fontSize: 11, color: T.muted, background: T.surf2, padding: "3px 12px", borderRadius: 20, border: `1px solid ${T.border}`, letterSpacing: 1 }}>
+            MATCHDAY {match.matchday}
+          </span>
+        </div>
+
+        {/* Teams */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 68, lineHeight: 1, display: "block" }}>{FLAG(match.home)}</span>
+            <span style={{ fontFamily: "Oswald", fontSize: 17, fontWeight: 700, color: T.text, textAlign: "center", lineHeight: 1.15 }}>{match.home}</span>
+            <span style={{ fontSize: 10, color: T.muted }}>FIFA #{RANK(match.home)}</span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, minWidth: 44 }}>
+            <span style={{ fontFamily: "Oswald", fontSize: 20, color: T.muted, fontWeight: 700 }}>VS</span>
+            <span style={{ fontSize: 10, color: T.muted }}>{match.match_date?.slice(5)}</span>
+          </div>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 68, lineHeight: 1, display: "block" }}>{FLAG(match.away)}</span>
+            <span style={{ fontFamily: "Oswald", fontSize: 17, fontWeight: 700, color: T.text, textAlign: "center", lineHeight: 1.15 }}>{match.away}</span>
+            <span style={{ fontSize: 10, color: T.muted }}>FIFA #{RANK(match.away)}</span>
+          </div>
+        </div>
+
+        {venue && (
+          <div style={{ textAlign: "center", marginTop: 10, fontSize: 11, color: T.muted }}>📍 {venue}</div>
+        )}
+
+        {/* Swipe direction hints */}
+        {!committed && (
+          <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginTop: 18, padding: "0 4px", opacity: active ? 0 : 0.38, transition: "opacity 0.2s" }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+              <span style={{ fontSize: 20, color: T.muted }}>←</span>
+              <span style={{ fontSize: 9, color: T.muted, fontFamily: "Oswald" }}>{match.home.split(" ")[0]}</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+              <span style={{ fontSize: 20, color: T.muted }}>↑</span>
+              <span style={{ fontSize: 9, color: T.muted, fontFamily: "Oswald" }}>DRAW</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+              <span style={{ fontSize: 20, color: T.muted }}>→</span>
+              <span style={{ fontSize: 9, color: T.muted, fontFamily: "Oswald" }}>{match.away.split(" ")[0]}</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Tap buttons — home on left (matches card layout), away on right */}
+      {!committed && (
+        <div style={{ display: "flex", gap: 8, padding: "0 16px 18px" }}>
+          <button
+            onClick={(e) => { e.stopPropagation(); onCommit("home"); }}
+            style={{ flex: 1, padding: "10px 6px", borderRadius: 12, background: "#10b98122", border: "1px solid #10b98144", color: "#10b981", fontFamily: "Oswald", fontWeight: 700, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}
+          >
+            <span style={{ fontSize: 13 }}>{FLAG(match.home)} {match.home}</span>
+            <span style={{ fontSize: 10, opacity: 0.75, letterSpacing: 1 }}>WINS</span>
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onCommit("draw"); }}
+            style={{ flex: 0, padding: "10px 12px", borderRadius: 12, background: `${T.muted}12`, border: `1px solid ${T.muted}28`, color: T.muted, fontFamily: "Oswald", fontWeight: 700, whiteSpace: "nowrap", display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}
+          >
+            <span style={{ fontSize: 13 }}>🤝</span>
+            <span style={{ fontSize: 10, letterSpacing: 1 }}>DRAW</span>
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onCommit("away"); }}
+            style={{ flex: 1, padding: "10px 6px", borderRadius: 12, background: "#3b82f622", border: "1px solid #3b82f644", color: "#3b82f6", fontFamily: "Oswald", fontWeight: 700, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}
+          >
+            <span style={{ fontSize: 13 }}>{FLAG(match.away)} {match.away}</span>
+            <span style={{ fontSize: 10, opacity: 0.75, letterSpacing: 1 }}>WINS</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Inline score editor (used in review screen) ─────────────────────────────
+function InlineScoreEditor({ match, existing, onSave, onCancel, T }) {
+  const [hg, setHg] = useState(existing?.predicted_home_score ?? 1);
+  const [ag2, setAg2] = useState(existing?.predicted_away_score ?? 0);
+  const [saving, setSaving] = useState(false);
+
+  const handle = async () => {
+    setSaving(true);
+    await onSave(hg, ag2);
+  };
+
+  const Ctrl = ({ val, set }) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <button onClick={() => set(v => Math.max(0, v - 1))} style={{ width: 30, height: 30, borderRadius: 7, background: T.surf3, border: `1px solid ${T.border}`, color: T.text, fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>−</button>
+      <span style={{ fontFamily: "Oswald", fontSize: 20, color: T.accent, minWidth: 22, textAlign: "center" }}>{val}</span>
+      <button onClick={() => set(v => v + 1)} style={{ width: 30, height: 30, borderRadius: 7, background: T.surf3, border: `1px solid ${T.border}`, color: T.text, fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+    </div>
+  );
+
+  return (
+    <div style={{ padding: "12px 14px", background: T.surf2, borderTop: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 11, color: T.muted, fontFamily: "Oswald" }}>{match.home}</span>
+      <Ctrl val={hg} set={setHg} />
+      <span style={{ fontFamily: "Oswald", fontSize: 14, color: T.muted, padding: "0 2px" }}>–</span>
+      <Ctrl val={ag2} set={setAg2} />
+      <span style={{ fontSize: 11, color: T.muted, fontFamily: "Oswald" }}>{match.away}</span>
+      <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+        <button onClick={handle} disabled={saving} style={{ padding: "7px 14px", borderRadius: 8, background: T.accent, color: "#000", fontSize: 12, fontFamily: "Oswald", fontWeight: 700, opacity: saving ? 0.6 : 1 }}>
+          {saving ? "..." : "SAVE"}
+        </button>
+        <button onClick={onCancel} style={{ padding: "7px 10px", borderRadius: 8, background: "transparent", border: `1px solid ${T.border}`, color: T.muted, fontSize: 12 }}>✕</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Group review / completion screen ────────────────────────────────────────
+function GroupReviewScreen({ groupId, fixtures, matchPreds, matches, editingMatchId, onEditMatch, onSave, onCancelEdit, ag, T }) {
+  const done = fixtures.filter(f => matchPreds[f.id]).length;
+  const total = fixtures.length;
+  const pct = Math.round((done / total) * 100);
+
+  const getMatchLocked = (f) => {
+    const dbM = matches.find(m => m.id === f.id);
+    const s = dbM?.status || "upcoming";
+    const deadline = new Date(new Date(`${f.match_date}T${f.match_time}Z`).getTime() - 30 * 60000);
+    return s === "live" || s === "finished" || new Date() >= deadline;
+  };
 
   return (
     <div className="fade-up">
-      <div
-        style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 14 }}
-      >
-        {Object.keys(GROUPS).map((g) => {
-          const dc = (GF[g] || []).filter((f) => matchPreds[f.id]).length;
+      <div style={{ textAlign: "center", padding: "16px 0 20px" }}>
+        <div style={{ fontSize: 40, marginBottom: 8 }}>{pct === 100 ? "🎉" : "📝"}</div>
+        <div style={{ fontFamily: "Oswald", fontSize: 21, color: T.accent, marginBottom: 4 }}>
+          Group {groupId} {pct === 100 ? "Complete!" : `— ${done}/${total} Predicted`}
+        </div>
+        <div style={{ fontSize: 12, color: T.muted }}>
+          {pct === 100 ? "Tap any unlocked match to adjust your score" : "Some matches were missed"}
+        </div>
+      </div>
+      <div style={{ height: 4, borderRadius: 4, background: T.surf2, marginBottom: 18, overflow: "hidden" }}>
+        <div style={{ height: "100%", background: pct === 100 ? T.green : T.accent, width: `${pct}%`, borderRadius: 4 }} />
+      </div>
+      {[1, 2, 3].map(md => (
+        <div key={md} style={{ marginBottom: 10, background: T.surf, borderRadius: 12, border: `1px solid ${T.border}`, overflow: "hidden" }}>
+          <div style={{ padding: "7px 14px", background: T.surf2, fontFamily: "Oswald", fontSize: 11, color: T.accent, letterSpacing: 1 }}>
+            MATCHDAY {md}
+          </div>
+          {fixtures.filter(f => f.matchday === md).map(f => {
+            const p = matchPreds[f.id];
+            const dbM = matches.find(m => m.id === f.id);
+            const actual = dbM?.actual_home_score != null ? `${dbM.actual_home_score}–${dbM.actual_away_score}` : null;
+            const locked = getMatchLocked(f);
+            const isEditing = editingMatchId === f.id;
+            const rc = p?.result_status === "exact" ? T.green : p?.result_status === "correct" ? T.accent : p?.result_status === "wrong" ? T.red : T.muted;
+            return (
+              <div key={f.id}>
+                <div
+                  onClick={() => !locked && !isEditing && onEditMatch(f)}
+                  style={{ display: "flex", alignItems: "center", gap: 7, padding: "11px 14px", borderTop: `1px solid ${T.border}`, cursor: locked ? "default" : "pointer", background: isEditing ? T.surf2 : "transparent", transition: "background 0.15s" }}
+                >
+                  <span style={{ fontSize: 20 }}>{FLAG(f.home)}</span>
+                  <span style={{ flex: 1, fontSize: 12, fontWeight: 700, color: T.text }}>{f.home}</span>
+                  {p ? (
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
+                      <span style={{ fontFamily: "Oswald", fontSize: 16, color: T.accent, fontWeight: 700, lineHeight: 1 }}>{p.predicted_home_score}–{p.predicted_away_score}</span>
+                      {p.result_status && (
+                        <span style={{ fontSize: 9, color: rc, fontFamily: "Oswald" }}>
+                          {p.result_status === "exact" ? "⚡EXACT" : p.result_status === "correct" ? "✓OK" : "✗WRONG"}
+                          {p.points_earned > 0 ? ` +${p.points_earned}pt` : ""}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: 11, color: locked ? T.red : T.muted }}>{locked ? "🔒 missed" : "—"}</span>
+                  )}
+                  {actual && <span style={{ fontSize: 10, color: T.muted }}>({actual})</span>}
+                  <span style={{ flex: 1, fontSize: 12, fontWeight: 700, color: T.text, textAlign: "right" }}>{f.away}</span>
+                  <span style={{ fontSize: 20 }}>{FLAG(f.away)}</span>
+                  {!locked && <span style={{ fontSize: 10, color: T.muted, marginLeft: 2 }}>✏️</span>}
+                </div>
+                {isEditing && (
+                  <InlineScoreEditor
+                    match={f}
+                    existing={p}
+                    onSave={(hs, as) => onSave(ag, f.id, hs, as)}
+                    onCancel={onCancelEdit}
+                    T={T}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Group Predictions (swipe-first flow) ────────────────────────────────────
+function GroupPredictions() {
+  const { T, matchPreds, savePrediction, matches } = useU();
+  const [ag, setAg] = useState("A");
+  const [pendingMatch, setPendingMatch] = useState(null); // { id, outcome } during exit anim
+  const [editingMatchId, setEditingMatchId] = useState(null);
+
+  const fixtures = GF[ag];
+
+  const isMatchLocked = useCallback((f) => {
+    const dbM = matches.find(m => m.id === f.id);
+    const s = dbM?.status || "upcoming";
+    const deadline = new Date(new Date(`${f.match_date}T${f.match_time}Z`).getTime() - 30 * 60000);
+    return s === "live" || s === "finished" || new Date() >= deadline;
+  }, [matches]);
+
+  useEffect(() => {
+    setPendingMatch(null);
+    setEditingMatchId(null);
+  }, [ag]);
+
+  const unpredicted = fixtures.filter(f => !matchPreds[f.id] && !isMatchLocked(f));
+  const predicted = fixtures.filter(f => matchPreds[f.id]);
+  const lockedMissed = fixtures.filter(f => isMatchLocked(f) && !matchPreds[f.id]);
+  const done = predicted.length;
+  const total = fixtures.length;
+
+  // During exit animation, keep showing the card being committed
+  const currentMatch = pendingMatch
+    ? fixtures.find(f => f.id === pendingMatch.id)
+    : unpredicted[0];
+  const nextMatch = unpredicted[pendingMatch ? 0 : 1];
+  const showSwipe = unpredicted.length > 0 || !!pendingMatch;
+
+  const handleCommit = useCallback((outcome) => {
+    if (!currentMatch || pendingMatch) return;
+    const scoreMap = { home: [1, 0], draw: [0, 0], away: [0, 1] };
+    const [hs, as] = scoreMap[outcome];
+    setPendingMatch({ id: currentMatch.id, outcome });
+    savePrediction(ag, currentMatch.id, hs, as);
+    setTimeout(() => setPendingMatch(null), 600);
+  }, [currentMatch, pendingMatch, ag, savePrediction]);
+
+  const handleEditSave = useCallback(async (groupId, matchId, hs, as) => {
+    await savePrediction(groupId, matchId, hs, as);
+    setEditingMatchId(null);
+  }, [savePrediction]);
+
+  return (
+    <div className="fade-up">
+      {/* Group tabs */}
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 14 }}>
+        {Object.keys(GROUPS).map(g => {
+          const gDone = (GF[g] || []).filter(f => matchPreds[f.id]).length;
+          const complete = gDone === (GF[g] || []).length;
           return (
             <button
               key={g}
-              onClick={() => {
-                setAg(g);
-                setAf(0);
-              }}
+              onClick={() => setAg(g)}
               style={{
-                padding: "5px 12px",
-                borderRadius: 7,
-                fontFamily: "Oswald",
-                fontSize: 13,
-                fontWeight: 600,
-                background: ag === g ? T.accent : "transparent",
-                color: ag === g ? "#000" : T.muted,
-                border: `1px solid ${ag === g ? T.accent : T.border}`,
-                transition: "all .2s",
-                position: "relative",
+                padding: "5px 12px", borderRadius: 7, fontFamily: "Oswald",
+                fontSize: 13, fontWeight: 600, position: "relative", transition: "all .2s",
+                background: ag === g ? T.accent : complete ? `${T.green}15` : "transparent",
+                color: ag === g ? "#000" : complete ? T.green : T.muted,
+                border: `1px solid ${ag === g ? T.accent : complete ? `${T.green}44` : T.border}`,
               }}
             >
               Grp {g}
-              {dc > 0 && (
-                <span
-                  style={{
-                    position: "absolute",
-                    top: -5,
-                    right: -5,
-                    fontSize: 9,
-                    background: T.green,
-                    color: "#fff",
-                    borderRadius: "50%",
-                    width: 16,
-                    height: 16,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  {dc}
+              {gDone > 0 && (
+                <span style={{ position: "absolute", top: -5, right: -5, fontSize: 9, background: complete ? T.green : T.accent, color: "#fff", borderRadius: "50%", width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {complete ? "✓" : gDone}
                 </span>
               )}
             </button>
           );
         })}
       </div>
-      {GF[ag].some((f) => {
-        const dbM = matches.find((m) => m.id === f.id);
-        const mStatus = dbM?.status || "upcoming";
-        const mDeadline = new Date(
-          new Date(`${f.match_date}T${f.match_time}Z`).getTime() - 30 * 60000,
-        );
-        return (
-          mStatus === "live" ||
-          mStatus === "finished" ||
-          new Date() >= mDeadline
-        );
-      }) && (
-        <div
-          style={{
-            marginBottom: 12,
-            padding: "9px 14px",
-            background: `${T.muted}12`,
-            border: `1px solid ${T.muted}33`,
-            borderRadius: 9,
-            fontSize: 12,
-            color: T.muted,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-          }}
-        >
-          🔒 Some score predictions in Group {ag} are locked. Visit{" "}
-          <strong>Qualifiers</strong> tab to pick who advances.
+
+      {/* Group progress bar */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+          <span style={{ fontSize: 11, color: T.muted, fontFamily: "Oswald", letterSpacing: 0.5 }}>
+            GROUP {ag} PREDICTIONS
+          </span>
+          <span style={{ fontSize: 11, color: T.muted }}>{done}/{total} matches</span>
         </div>
-      )}
-      <div
-        style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "280px 1fr", gap: 14 }}
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {[1, 2, 3].map((md) => (
-            <div
-              key={md}
-              style={{
-                background: T.surf,
-                border: `1px solid ${T.border}`,
-                borderRadius: 11,
-                padding: 11,
-              }}
-            >
-              <div
-                style={{
-                  fontFamily: "Oswald",
-                  fontSize: 12,
-                  color: T.accent,
-                  marginBottom: 7,
-                }}
-              >
-                Matchday {md}
-              </div>
-              {fixtures
-                .filter((f) => f.matchday === md)
-                .map((f) => {
-                  const p = matchPreds[f.id];
-                  const fi = fixtures.indexOf(f);
-                  const dbM = matches.find((m) => m.id === f.id);
-                  const mStatus = dbM?.status || "upcoming";
-                  const mDeadline = new Date(
-                    new Date(`${f.match_date}T${f.match_time}Z`).getTime() - 30 * 60000,
-                  );
-                  const fiLocked =
-                    mStatus === "live" ||
-                    mStatus === "finished" ||
-                    new Date() >= mDeadline;
-                  return (
-                    <div
-                      key={f.id}
-                      onClick={() => setAf(fi)}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 5,
-                        padding: "6px 8px",
-                        borderRadius: 7,
-                        marginBottom: 4,
-                        cursor: "pointer",
-                        background: af === fi ? `${T.accent}1a` : T.surf2,
-                        border: `1px solid ${af === fi ? T.accent : T.border}`,
-                        transition: "all .15s",
-                        opacity: fiLocked && !p ? 0.6 : 1,
-                      }}
-                    >
-                      <span style={{ fontSize: 13 }}>{FLAG(f.home)}</span>
-                      <span style={{ flex: 1, fontSize: 10, fontWeight: 600 }}>
-                        {f.home}
-                      </span>
-                      {p ? (
-                        <span
-                          style={{
-                            fontFamily: "Oswald",
-                            fontSize: 12,
-                            color: T.accent,
-                            fontWeight: 700,
-                          }}
-                        >
-                          {p.predicted_home_score}–{p.predicted_away_score}
-                        </span>
-                      ) : (
-                        <span style={{ fontSize: 9, color: T.muted }}>
-                          {f.match_date?.slice(5)}
-                        </span>
-                      )}
-                      <span
-                        style={{
-                          flex: 1,
-                          fontSize: 10,
-                          fontWeight: 600,
-                          textAlign: "right",
-                        }}
-                      >
-                        {f.away}
-                      </span>
-                      <span style={{ fontSize: 13 }}>{FLAG(f.away)}</span>
-                      {mStatus === "live" && (
-                        <span style={{ fontSize: 9, color: T.green }}>●</span>
-                      )}
-                      {mStatus === "finished" && (
-                        <span style={{ fontSize: 9, color: T.muted }}>✓</span>
-                      )}
-                      {p && mStatus !== "live" && mStatus !== "finished" &&
-                        (fiLocked ? (
-                          <span style={{ fontSize: 9, color: T.red }}>🔒</span>
-                        ) : (
-                          <span style={{ fontSize: 9, color: T.green }}>✓</span>
-                        ))}
-                    </div>
-                  );
-                })}
-            </div>
-          ))}
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                marginBottom: 8,
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: "Oswald",
-                  fontSize: 13,
-                  color: T.text,
-                  fontWeight: 600,
-                }}
-              >
-                Score Prediction
-              </span>
-              <span
-                style={{
-                  fontSize: 10,
-                  fontWeight: 700,
-                  padding: "2px 7px",
-                  borderRadius: 10,
-                  background: `${T.orange}22`,
-                  color: T.orange,
-                  border: `1px solid ${T.orange}44`,
-                }}
-              >
-                BONUS · Exact +{SCORING.EXACT}pts · Correct +{SCORING.CORRECT}pt
-              </span>
-            </div>
-            <MatchLinePredictor
-              key={match.id}
-              match={match}
-              groupId={ag}
-              existing={matchPreds[match.id]}
-              onSave={(hs, as) => savePrediction(ag, match.id, hs, as)}
-              T={T}
-            />
-          </div>
+        <div style={{ height: 4, borderRadius: 4, background: T.surf2, overflow: "hidden" }}>
+          <div style={{ height: "100%", borderRadius: 4, background: done === total ? T.green : T.accent, width: `${(done / total) * 100}%`, transition: "width 0.5s ease" }} />
         </div>
       </div>
+
+      {/* Swipe card flow */}
+      {showSwipe && (
+        <div style={{ position: "relative" }}>
+          {/* Ghost card peek (next match) */}
+          {nextMatch && !pendingMatch && (
+            <div style={{
+              position: "absolute", top: 8, left: "50%", transform: "translateX(-50%)",
+              width: "calc(100% - 24px)", maxWidth: 400, height: 80,
+              borderRadius: 24, background: T.surf, border: `1px solid ${T.border}`,
+              opacity: 0.28, zIndex: 0,
+            }} />
+          )}
+          {currentMatch && (
+            <div style={{ position: "relative", zIndex: 1, maxWidth: 440, margin: "0 auto" }}>
+              <SwipeMatchCard
+                key={currentMatch.id}
+                match={currentMatch}
+                groupId={ag}
+                committed={!!pendingMatch}
+                committedOutcome={pendingMatch?.outcome}
+                onCommit={handleCommit}
+                T={T}
+              />
+            </div>
+          )}
+          {lockedMissed.length > 0 && (
+            <div style={{ marginTop: 12, padding: "8px 14px", background: `${T.red}10`, border: `1px solid ${T.red}22`, borderRadius: 10, fontSize: 12, color: T.muted }}>
+              🔒 {lockedMissed.length} match{lockedMissed.length > 1 ? "es" : ""} prediction window has closed
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Review / completion screen */}
+      {!showSwipe && (
+        <GroupReviewScreen
+          groupId={ag}
+          fixtures={fixtures}
+          matchPreds={matchPreds}
+          matches={matches}
+          editingMatchId={editingMatchId}
+          onEditMatch={(f) => setEditingMatchId(f.id)}
+          onSave={handleEditSave}
+          onCancelEdit={() => setEditingMatchId(null)}
+          ag={ag}
+          T={T}
+        />
+      )}
     </div>
   );
 }
@@ -3241,55 +3451,46 @@ function ThirdPlaceMatchView() {
           padding: 22,
         }}
       >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr auto 1fr",
-            gap: 12,
-            alignItems: "center",
-          }}
-        >
-          {[home, away].map((team, ti) => (
-            <div
-              key={ti}
-              className={`team-btn${winner === team ? " celebrate" : ""}`}
-              onClick={() => team !== "TBD" && saveKO("tp", 0, team)}
-              style={{
-                textAlign: "center",
-                padding: 16,
-                borderRadius: 11,
-                cursor: team === "TBD" ? "default" : "pointer",
-                background: winner === team ? `${T.accent}2a` : T.surf2,
-                border: `2px solid ${winner === team ? T.accent : T.border}`,
-                transition: "all .3s",
-              }}
-            >
-              <div style={{ fontSize: 48, marginBottom: 7 }}>{FLAG(team)}</div>
-              <div
-                style={{
-                  fontFamily: "Oswald",
-                  fontSize: 15,
-                  fontWeight: 700,
-                  color: winner === team ? T.accent : T.text,
-                }}
-              >
-                {team}
-              </div>
-              {winner === team && (
-                <div style={{ fontSize: 18, marginTop: 5 }}>🥉</div>
-              )}
-            </div>
-          ))}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 12, alignItems: "stretch" }}>
+          {/* Home team */}
           <div
+            className={`team-btn${winner === home ? " celebrate" : ""}`}
+            onClick={() => home !== "TBD" && saveKO("tp", 0, home)}
             style={{
-              textAlign: "center",
-              fontFamily: "Oswald",
-              fontSize: 20,
-              color: T.accent,
-              fontWeight: 700,
+              textAlign: "center", padding: 16, borderRadius: 11,
+              cursor: home === "TBD" ? "default" : "pointer",
+              background: winner === home ? `${T.accent}2a` : T.surf2,
+              border: `2px solid ${winner === home ? T.accent : T.border}`,
+              transition: "all .3s",
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
             }}
           >
+            <div style={{ fontSize: 48, marginBottom: 7 }}>{FLAG(home)}</div>
+            <div style={{ fontFamily: "Oswald", fontSize: 15, fontWeight: 700, color: winner === home ? T.accent : T.text }}>{home}</div>
+            {winner === home && <div style={{ fontSize: 18, marginTop: 5 }}>🥉</div>}
+          </div>
+
+          {/* VS — centered between the two cards */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Oswald", fontSize: 20, color: T.accent, fontWeight: 700, padding: "0 4px" }}>
             VS
+          </div>
+
+          {/* Away team */}
+          <div
+            className={`team-btn${winner === away ? " celebrate" : ""}`}
+            onClick={() => away !== "TBD" && saveKO("tp", 0, away)}
+            style={{
+              textAlign: "center", padding: 16, borderRadius: 11,
+              cursor: away === "TBD" ? "default" : "pointer",
+              background: winner === away ? `${T.accent}2a` : T.surf2,
+              border: `2px solid ${winner === away ? T.accent : T.border}`,
+              transition: "all .3s",
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+            }}
+          >
+            <div style={{ fontSize: 48, marginBottom: 7 }}>{FLAG(away)}</div>
+            <div style={{ fontFamily: "Oswald", fontSize: 15, fontWeight: 700, color: winner === away ? T.accent : T.text }}>{away}</div>
+            {winner === away && <div style={{ fontSize: 18, marginTop: 5 }}>🥉</div>}
           </div>
         </div>
         {winner && (
@@ -3413,58 +3614,48 @@ function FinalView() {
           padding: 24,
         }}
       >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr auto 1fr",
-            gap: 14,
-            alignItems: "center",
-          }}
-        >
-          {[home, away].map((team, ti) => (
-            <div
-              key={ti}
-              className={`team-btn${champion === team ? " celebrate" : ""}`}
-              onClick={() => team !== "TBD" && saveKO("final", 0, team)}
-              style={{
-                textAlign: "center",
-                padding: 18,
-                borderRadius: 11,
-                cursor: team === "TBD" ? "default" : "pointer",
-                background: champion === team ? `${T.accent}2a` : T.surf2,
-                border: `2px solid ${champion === team ? T.accent : T.border}`,
-                transition: "all .3s",
-              }}
-            >
-              <div style={{ fontSize: 56, marginBottom: 7 }}>{FLAG(team)}</div>
-              <div
-                style={{
-                  fontFamily: "Oswald",
-                  fontSize: 15,
-                  fontWeight: 700,
-                  color: champion === team ? T.accent : T.text,
-                }}
-              >
-                {team}
-              </div>
-              <div style={{ fontSize: 9, color: T.muted, marginTop: 2 }}>
-                FIFA #{RANK(team)}
-              </div>
-              {champion === team && (
-                <div style={{ fontSize: 22, marginTop: 6 }}>🏆</div>
-              )}
-            </div>
-          ))}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 14, alignItems: "stretch" }}>
+          {/* Home team */}
           <div
+            className={`team-btn${champion === home ? " celebrate" : ""}`}
+            onClick={() => home !== "TBD" && saveKO("final", 0, home)}
             style={{
-              textAlign: "center",
-              fontFamily: "Oswald",
-              fontSize: 22,
-              color: T.accent,
-              fontWeight: 700,
+              textAlign: "center", padding: 18, borderRadius: 11,
+              cursor: home === "TBD" ? "default" : "pointer",
+              background: champion === home ? `${T.accent}2a` : T.surf2,
+              border: `2px solid ${champion === home ? T.accent : T.border}`,
+              transition: "all .3s",
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
             }}
           >
+            <div style={{ fontSize: 56, marginBottom: 7 }}>{FLAG(home)}</div>
+            <div style={{ fontFamily: "Oswald", fontSize: 15, fontWeight: 700, color: champion === home ? T.accent : T.text }}>{home}</div>
+            <div style={{ fontSize: 9, color: T.muted, marginTop: 2 }}>FIFA #{RANK(home)}</div>
+            {champion === home && <div style={{ fontSize: 22, marginTop: 6 }}>🏆</div>}
+          </div>
+
+          {/* VS — centered between the two cards */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Oswald", fontSize: 22, color: T.accent, fontWeight: 700, padding: "0 4px" }}>
             VS
+          </div>
+
+          {/* Away team */}
+          <div
+            className={`team-btn${champion === away ? " celebrate" : ""}`}
+            onClick={() => away !== "TBD" && saveKO("final", 0, away)}
+            style={{
+              textAlign: "center", padding: 18, borderRadius: 11,
+              cursor: away === "TBD" ? "default" : "pointer",
+              background: champion === away ? `${T.accent}2a` : T.surf2,
+              border: `2px solid ${champion === away ? T.accent : T.border}`,
+              transition: "all .3s",
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+            }}
+          >
+            <div style={{ fontSize: 56, marginBottom: 7 }}>{FLAG(away)}</div>
+            <div style={{ fontFamily: "Oswald", fontSize: 15, fontWeight: 700, color: champion === away ? T.accent : T.text }}>{away}</div>
+            <div style={{ fontSize: 9, color: T.muted, marginTop: 2 }}>FIFA #{RANK(away)}</div>
+            {champion === away && <div style={{ fontSize: 22, marginTop: 6 }}>🏆</div>}
           </div>
         </div>
         {champion && (

@@ -169,16 +169,24 @@ export const upsertPrediction = async (prediction) => {
 
 // ─── Group qualification helpers ──────────────────────────────────────────────
 export const getUserGroupQuals = async (userId) =>
-  supabase.from("group_qualifications").select("*").eq("user_id", userId);
+  supabase
+    .from("group_qualifications")
+    .select("group_id, predicted_first, predicted_second, points_earned, scored_at")
+    .eq("user_id", userId);
 
 export const upsertGroupQual = async (qual) => {
-  // Group qualifier picks (1st/2nd place per group) are not scored for points —
-  // they drive bracket visualisation only. No deadline lock is applied here;
-  // individual match-score predictions are locked separately in upsertPrediction.
   return supabase
     .from("group_qualifications")
-    .upsert(qual, { onConflict: "user_id,group_id" })
-    .select()
+    .upsert(
+      {
+        user_id:          qual.user_id,
+        group_id:         qual.group_id,
+        predicted_first:  qual.predicted_first,
+        predicted_second: qual.predicted_second,
+      },
+      { onConflict: "user_id,group_id" }
+    )
+    .select("group_id, predicted_first, predicted_second")
     .single();
 };
 
