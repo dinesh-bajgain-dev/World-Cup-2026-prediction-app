@@ -33,14 +33,18 @@ export default async function handler(req, res) {
   }
 
   // Send via Brevo
-  const BREVO_API_KEY   = process.env.BREVO_API_KEY;
-  const SENDER_EMAIL    = process.env.BREVO_SENDER_EMAIL || "noreply@wc2026predictor.com";
-  const SENDER_NAME     = process.env.BREVO_SENDER_NAME  || "World Cup 2026 Predictor";
-  const APP_URL         = process.env.VITE_APP_URL        || "https://wc2026predictor.com";
+  const BREVO_API_KEY = process.env.BREVO_API_KEY;
+  const SENDER_EMAIL  = process.env.BREVO_SENDER_EMAIL;   // must be set — no fallback
+  const SENDER_NAME   = process.env.BREVO_SENDER_NAME || "World Cup 2026 Predictor";
+  const APP_URL       = process.env.VITE_APP_URL       || "https://wc2026predictor.com";
 
   if (!BREVO_API_KEY) {
-    console.error("[send-otp] BREVO_API_KEY not set");
-    return res.status(500).json({ success: false, error: "Email service not configured" });
+    console.error("[send-otp] BREVO_API_KEY env var is not set");
+    return res.status(500).json({ success: false, error: "Email service not configured (missing API key)" });
+  }
+  if (!SENDER_EMAIL) {
+    console.error("[send-otp] BREVO_SENDER_EMAIL env var is not set");
+    return res.status(500).json({ success: false, error: "Email service not configured (missing sender address)" });
   }
 
   const html = `
@@ -77,8 +81,18 @@ export default async function handler(req, res) {
 
     if (!brevoRes.ok) {
       const body = await brevoRes.text();
-      console.error(`[send-otp] Brevo error ${brevoRes.status}:`, body);
-      return res.status(500).json({ success: false, error: `Email delivery failed (${brevoRes.status})` });
+      console.error(`[send-otp] Brevo ${brevoRes.status} — sender:${SENDER_EMAIL} — body:`, body);
+      // Parse Brevo's error message if available
+      let brevoMessage = `HTTP ${brevoRes.status}`;
+      try {
+        const parsed = JSON.parse(body);
+        brevoMessage = parsed.message || parsed.error || brevoMessage;
+      } catch {}
+      return res.status(500).json({
+        success: false,
+        error: `Email delivery failed: ${brevoMessage}`,
+        debug: { status: brevoRes.status, sender: SENDER_EMAIL },
+      });
     }
 
     console.log(`[send-otp] ✅ OTP sent to ${email}`);

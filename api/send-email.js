@@ -68,12 +68,16 @@ export default async function handler(req, res) {
   }
 
   const BREVO_API_KEY = process.env.BREVO_API_KEY;
-  const SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || "noreply@wc2026predictor.com";
-  const SENDER_NAME = process.env.BREVO_SENDER_NAME || "World Cup 2026 Predictor";
+  const SENDER_EMAIL  = process.env.BREVO_SENDER_EMAIL;   // must be set — no fallback
+  const SENDER_NAME   = process.env.BREVO_SENDER_NAME || "World Cup 2026 Predictor";
 
   if (!BREVO_API_KEY) {
-    console.error("[email] ❌ BREVO_API_KEY environment variable not set");
-    return res.status(500).json({ error: "Email service not configured" });
+    console.error("[email] ❌ BREVO_API_KEY not set");
+    return res.status(500).json({ error: "Email service not configured (missing API key)" });
+  }
+  if (!SENDER_EMAIL) {
+    console.error("[email] ❌ BREVO_SENDER_EMAIL not set");
+    return res.status(500).json({ error: "Email service not configured (missing sender address)" });
   }
 
   console.log(

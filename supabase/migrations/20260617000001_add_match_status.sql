@@ -19,15 +19,21 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_server_time() TO authenticated;
 
--- Update existing 'upcoming' matches to have a default match_status
-UPDATE public.matches
-SET match_status = 'Not Started'
-WHERE match_status IS NULL AND status = 'upcoming';
-
-UPDATE public.matches
-SET match_status = 'Finished'
-WHERE match_status IS NULL AND status = 'finished';
-
-UPDATE public.matches
-SET match_status = 'Live'
-WHERE match_status IS NULL AND status = 'live';
+-- Back-fill match_status only if the status column already exists
+-- (guards against running on a fresh DB where matches may not be seeded yet)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'matches'
+      AND column_name  = 'status'
+  ) THEN
+    UPDATE public.matches SET match_status = 'Not Started'
+      WHERE match_status IS NULL AND status = 'upcoming';
+    UPDATE public.matches SET match_status = 'Finished'
+      WHERE match_status IS NULL AND status = 'finished';
+    UPDATE public.matches SET match_status = 'Live'
+      WHERE match_status IS NULL AND status = 'live';
+  END IF;
+END $$;
