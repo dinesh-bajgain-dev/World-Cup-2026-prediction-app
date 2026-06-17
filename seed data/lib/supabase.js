@@ -110,40 +110,52 @@ export const upsertPrediction = async (prediction) => {
     .maybeSingle();
 
   if (matchError) return { data: null, error: matchError };
-  if (!match) return { data: null, error: new Error("Match not found") };
 
-  // Block if match is already live or finished
-  if (match.status === "live" || match.status === "finished") {
+  if (!match) {
     return {
       data: null,
-      error: new Error("Match has started — predictions cannot be changed"),
+      error: new Error("Match not found in database — please refresh and try again"),
     };
   }
 
-  // Check 30-min deadline using server time
-  const { data: serverTime, error: timeError } = await supabase
-    .rpc("get_server_time")
-    .maybeSingle();
-
-  if (timeError) {
-    // Fall back to prediction_deadline comparison against client time
-    const deadline = new Date(match.prediction_deadline);
-    if (new Date() >= deadline) {
+  if (match) {
+    // Block if match is already live or finished
+    if (match.status === "live" || match.status === "finished") {
       return {
         data: null,
-        error: new Error("Prediction deadline has passed (30 min before kick-off)"),
+        error: new Error("Match has started — predictions cannot be changed"),
       };
     }
-  } else {
-    const serverNow = serverTime?.server_time
-      ? new Date(serverTime.server_time)
-      : new Date();
-    const deadline = new Date(match.prediction_deadline);
-    if (serverNow >= deadline) {
-      return {
-        data: null,
-        error: new Error("Prediction deadline has passed (30 min before kick-off)"),
-      };
+
+    // Check 30-min deadline using server time
+    const { data: serverTime, error: timeError } = await supabase
+      .rpc("get_server_time")
+      .maybeSingle();
+
+    if (timeError) {
+      // Fall back to prediction_deadline comparison against client time
+      const deadline = new Date(match.prediction_deadline);
+      if (new Date() >= deadline) {
+        return {
+          data: null,
+          error: new Error(
+            "Prediction deadline has passed (30 min before kick-off)",
+          ),
+        };
+      }
+    } else {
+      const serverNow = serverTime?.server_time
+        ? new Date(serverTime.server_time)
+        : new Date();
+      const deadline = new Date(match.prediction_deadline);
+      if (serverNow >= deadline) {
+        return {
+          data: null,
+          error: new Error(
+            "Prediction deadline has passed (30 min before kick-off)",
+          ),
+        };
+      }
     }
   }
 
@@ -160,35 +172,9 @@ export const getUserGroupQuals = async (userId) =>
   supabase.from("group_qualifications").select("*").eq("user_id", userId);
 
 export const upsertGroupQual = async (qual) => {
-  // Check if any match in this group has passed its prediction_deadline
-  const { data: matches, error: matchError } = await supabase
-    .from("matches")
-    .select("prediction_deadline, status")
-    .eq("group_id", qual.group_id);
-
-  if (matchError) return { data: null, error: matchError };
-
-  const { data: serverTime } = await supabase
-    .rpc("get_server_time")
-    .maybeSingle();
-  const serverNow = serverTime?.server_time
-    ? new Date(serverTime.server_time)
-    : new Date();
-
-  const anyLocked = matches?.some((m) => {
-    if (m.status === "live" || m.status === "finished") return true;
-    return serverNow >= new Date(m.prediction_deadline);
-  });
-
-  if (anyLocked) {
-    return {
-      data: null,
-      error: new Error(
-        "Group predictions are locked — a match in this group has started",
-      ),
-    };
-  }
-
+  // Group qualifier picks (1st/2nd place per group) are not scored for points —
+  // they drive bracket visualisation only. No deadline lock is applied here;
+  // individual match-score predictions are locked separately in upsertPrediction.
   return supabase
     .from("group_qualifications")
     .upsert(qual, { onConflict: "user_id,group_id" })
@@ -201,37 +187,9 @@ export const getUserKnockoutPreds = async (userId) =>
   supabase.from("knockout_predictions").select("*").eq("user_id", userId);
 
 export const upsertKnockoutPred = async (pred) => {
-  const { data: serverTime } = await supabase
-    .rpc("get_server_time")
-    .maybeSingle();
-  const serverNow = serverTime?.server_time
-    ? new Date(serverTime.server_time)
-    : new Date();
-
-  const stageMap = {
-    r32: "r32", r16: "r16", qf: "qf", sf: "sf", tp: "final", final: "final",
-  };
-  const dbStage = stageMap[pred.stage] || pred.stage;
-
-  const { data: matches, error: matchError } = await supabase
-    .from("matches")
-    .select("prediction_deadline, status")
-    .eq("stage", dbStage);
-
-  if (matchError) return { data: null, error: matchError };
-
-  const anyLocked = matches?.some((m) => {
-    if (m.status === "live" || m.status === "finished") return true;
-    return serverNow >= new Date(m.prediction_deadline);
-  });
-
-  if (anyLocked) {
-    return {
-      data: null,
-      error: new Error("Knockout predictions are locked for this stage"),
-    };
-  }
-
+  // Knockout picks (R32 → Final) are not scored for points — they drive bracket
+  // visualisation only. No deadline lock is applied here; individual match-score
+  // predictions are locked separately in upsertPrediction.
   return supabase
     .from("knockout_predictions")
     .upsert(pred, { onConflict: "user_id,stage,slot_index" })
@@ -334,11 +292,27 @@ export const getLiveMatches = async () =>
     .select("*")
     .eq("status", "live");
 
-// Flat scoring constants (configurable here or via DB scoring_config table)
+// ─── Scoring constants ────────────────────────────────────────────────────────
+// These mirror the DB scoring_config table values (used for UI display only;
+// actual scoring runs server-side via DB functions).
 export const SCORING = {
-  EXACT: 10,    // Predicted exact scoreline
-  CORRECT: 5,   // Predicted correct winner/draw
+  // Score prediction — bonus/side game (reduced from 10/5)
+  EXACT: 3,
+  CORRECT: 1,
   WRONG: 0,
+
+  // Group stage qualification
+  GROUP_FIRST: 5,   // Correct 1st place prediction
+  GROUP_SECOND: 5,  // Correct 2nd place prediction
+  GROUP_BOTH: 3,    // Both teams correct regardless of order (additive bonus)
+
+  // Knockout stages — per correct match winner
+  R32_WINNER: 2,
+  R16_WINNER: 2,
+  QF_WINNER: 3,
+  SF_WINNER: 5,    // also = correct finalist prediction
+  TP_WINNER: 2,    // 3rd place match
+  FINAL_WINNER: 10, // Champion
 };
 
 export const updatePredictionResults = async (matchId = null) => {
@@ -413,22 +387,47 @@ export const updatePredictionResults = async (matchId = null) => {
   return { data: { totalScored, totalSkipped, errors }, error: null };
 };
 
-// Refresh a single user's aggregated stats from their predictions (idempotent)
-export const refreshUserStats = async (userId) => {
-  const { data: preds, error } = await supabase
-    .from("predictions")
-    .select("result_status, points_earned")
-    .eq("user_id", userId)
-    .not("result_status", "is", null);
+// Refresh all of a user's aggregated stats across every scoring source.
+// Calls the DB function refresh_user_full_stats (idempotent).
+export const refreshUserFullStats = async (userId) =>
+  supabase.rpc("refresh_user_full_stats", { p_user_id: userId });
 
-  if (error) return { error };
+// ─── Group standings helpers ──────────────────────────────────────────────────
+export const getGroupStandings = async () =>
+  supabase.from("group_standings").select("*").order("group_id");
 
-  const totalPoints = preds.reduce((s, p) => s + (p.points_earned || 0), 0);
-  const totalBets = preds.length;
-  const correctBets = preds.filter((p) => p.result_status === "exact" || p.result_status === "correct").length;
+// Admin: record actual group standings and score all predictions for that group.
+// Returns { data: number_of_users_scored, error }.
+export const adminScoreGroupQual = async (groupId, first, second) =>
+  supabase.rpc("score_group_qual", {
+    p_group_id: groupId,
+    p_first: first,
+    p_second: second,
+  });
 
-  return supabase
+// Admin: score one knockout match slot with the actual winner.
+// stage ∈ 'r32' | 'r16' | 'qf' | 'sf' | 'tp' | 'final'
+// slotIndex is 0-based within that stage.
+export const adminScoreKnockoutSlot = async (stage, slotIndex, actualWinner) =>
+  supabase.rpc("score_knockout_slot", {
+    p_stage: stage,
+    p_slot_index: slotIndex,
+    p_actual_winner: actualWinner,
+  });
+
+// Admin: refresh all users' full stats in one pass.
+export const adminRefreshAllStats = async () => {
+  const { data: users, error } = await supabase
     .from("profiles")
-    .update({ total_points: totalPoints, total_bets: totalBets, correct_bets: correctBets, updated_at: new Date().toISOString() })
-    .eq("id", userId);
+    .select("id")
+    .eq("role", "user");
+  if (error) return { error };
+  const errors = [];
+  for (const u of users || []) {
+    const { error: e } = await supabase.rpc("refresh_user_full_stats", {
+      p_user_id: u.id,
+    });
+    if (e) errors.push({ userId: u.id, error: e.message });
+  }
+  return { data: { refreshed: users?.length || 0, errors }, error: null };
 };

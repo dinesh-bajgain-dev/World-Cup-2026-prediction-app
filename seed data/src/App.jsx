@@ -36,11 +36,16 @@ import {
   getLeaderboard,
   getPlayers,
   getMatches,
+  getGroupStandings,
   adminGetAllUsers,
   adminGetUserPredictions,
   adminGetAuditLog,
   adminGetAllPredictions,
+  adminScoreGroupQual,
+  adminScoreKnockoutSlot,
+  adminRefreshAllStats,
   syncMatchesWithAPI,
+  SCORING,
 } from "../lib/supabase";
 import { useAuth, AuthProvider } from "../contexts/AuthContext";
 import {
@@ -50,9 +55,7 @@ import {
   getAccumulatorMultiplier,
 } from "../lib/odds";
 import {
-  deriveQualification,
   resolveSlot,
-  getThirdPlaceBadge,
   R32_BRACKET,
   R16_BRACKET,
   QF_BRACKET,
@@ -235,10 +238,10 @@ const GF = {
     { id:"H6", home:"Cape Verde",   away:"Saudi Arabia",matchday:3, match_date:"2026-06-26", match_time:"21:00", venue:"Akron" },
   ],
   I: [
-    { id:"I1", home:"France",  away:"Norway",  matchday:1, match_date:"2026-06-16", match_time:"21:00", venue:"ATT" },
-    { id:"I2", home:"Senegal", away:"Iraq",    matchday:1, match_date:"2026-06-17", match_time:"15:00", venue:"Arrowhead" },
-    { id:"I3", home:"France",  away:"Senegal", matchday:2, match_date:"2026-06-21", match_time:"21:00", venue:"ATT" },
-    { id:"I4", home:"Norway",  away:"Iraq",    matchday:2, match_date:"2026-06-22", match_time:"15:00", venue:"Arrowhead" },
+    { id:"I1", home:"France",  away:"Senegal", matchday:1, match_date:"2026-06-16", match_time:"21:00", venue:"ATT" },
+    { id:"I2", home:"Norway",  away:"Iraq",    matchday:1, match_date:"2026-06-16", match_time:"18:00", venue:"Arrowhead" },
+    { id:"I3", home:"France",  away:"Norway",  matchday:2, match_date:"2026-06-21", match_time:"21:00", venue:"ATT" },
+    { id:"I4", home:"Senegal", away:"Iraq",    matchday:2, match_date:"2026-06-22", match_time:"15:00", venue:"Arrowhead" },
     { id:"I5", home:"France",  away:"Iraq",    matchday:3, match_date:"2026-06-27", match_time:"21:00", venue:"ATT" },
     { id:"I6", home:"Norway",  away:"Senegal", matchday:3, match_date:"2026-06-27", match_time:"21:00", venue:"Arrowhead" },
   ],
@@ -1032,11 +1035,21 @@ const savePrediction = async (gId, matchId, hs, as) => {
     });
     if (error) showToast(error.message, "error");
   };
-  // Derive qualification state from user's group predictions
-  const qual = useMemo(
-    () => deriveQualification(GROUPS, GF, groupResults),
-    [groupResults],
-  );
+  // Derive qualification from manual picks (groupQuals 1st/2nd + knockouts t3-0..t3-7)
+  const qual = useMemo(() => {
+    const winners = {};
+    const runnersUp = {};
+    for (const [g, picks] of Object.entries(groupQuals)) {
+      if (picks.first)  winners[g]   = picks.first;
+      if (picks.second) runnersUp[g] = picks.second;
+    }
+    const qualified3 = [];
+    for (let i = 0; i < 8; i++) {
+      const team = knockouts[`t3-${i}`];
+      if (team) qualified3.push({ team, position: i + 1 });
+    }
+    return { winners, runnersUp, qualified3, thirdRows: qualified3, allStandings: {} };
+  }, [groupQuals, knockouts]);
   const resolve = useCallback(
     (slot) => resolveSlot(slot, qual, knockouts, sfLosers),
     [qual, knockouts, sfLosers],
@@ -1046,9 +1059,8 @@ const savePrediction = async (gId, matchId, hs, as) => {
   const accMul = getAccumulatorMultiplier(totalPreds);
   const nav = [
     { id: "home", icon: "🏠", label: "Home" },
-    { id: "groups", icon: "🏟", label: "Group Stage" },
-    { id: "standings", icon: "📊", label: "All Standings" },
-    { id: "thirds", icon: "🥉", label: "3rd Place Race" },
+    { id: "groups", icon: "⚽", label: "Score Preds" },
+    { id: "qualifiers", icon: "📋", label: "Qualifiers" },
     { id: "r32", icon: "32", label: "Round of 32" },
     { id: "r16", icon: "16", label: "Round of 16" },
     { id: "qf", icon: "⚡", label: "Quarter Finals" },
@@ -1245,8 +1257,7 @@ const savePrediction = async (gId, matchId, hs, as) => {
           <main style={{ flex: 1, overflowY: "auto", padding: isMobile ? "12px" : "16px", paddingBottom: isMobile ? 76 : 16 }}>
             {view === "home" && <HomeView />}
             {view === "groups" && <GroupPredictions />}
-            {view === "standings" && <AllStandings />}
-            {view === "thirds" && <ThirdPlaceRace />}
+            {view === "qualifiers" && <QualifiersView />}
             {view === "r32" && <KnockoutView stage="r32" title="Round of 32" bracket={R32_BRACKET} />}
             {view === "r16" && <KnockoutView stage="r16" title="Round of 16" bracket={R16_BRACKET} />}
             {view === "qf" && <KnockoutView stage="qf" title="Quarter Finals" bracket={QF_BRACKET} />}
@@ -1513,136 +1524,11 @@ function HomeView() {
 }
 
 function GroupPredictions() {
-  const { T, matchPreds, groupQuals, saveGroupQual, savePrediction, matches, isMobile } = useU();
+  const { T, matchPreds, savePrediction, matches, isMobile } = useU();
   const [ag, setAg] = useState("A");
-  // Derive qualifier picks directly from context — no local state race condition
-  const savedFirst = groupQuals[ag]?.first || "";
-  const savedSecond = groupQuals[ag]?.second || "";
-  // Local edit state — only used while user is making changes before saving
-  const [firstPick, setFirstPick] = useState(savedFirst);
-  const [secondPick, setSecondPick] = useState(savedSecond);
   const [af, setAf] = useState(0);
-  const [qualSaveStatus, setQualSaveStatus] = useState(
-    savedFirst && savedSecond ? "saved" : "idle",
-  );
-  const qualDebounceRef = useRef(null);
-  const qualSavedTimerRef = useRef(null);
-  const qualDirtyRef = useRef(false);
-  const qualPendingRef = useRef({ first: "", second: "" });
   const fixtures = GF[ag];
   const match = fixtures[af];
-  // Sync local edit state from context whenever ag changes OR groupQuals updates
-  // This is the critical fix: always override local state with context truth
-  useEffect(() => {
-    setFirstPick(groupQuals[ag]?.first || "");
-    setSecondPick(groupQuals[ag]?.second || "");
-  }, [ag, groupQuals[ag]?.first, groupQuals[ag]?.second]);
-
-  // Debounced auto-save for qualifier picks
-  const triggerQualAutoSave = useCallback(
-    (f, s) => {
-      if (!f || !s || f === s) return;
-      qualDirtyRef.current = true;
-      qualPendingRef.current = { first: f, second: s };
-      setQualSaveStatus("dirty");
-      clearTimeout(qualDebounceRef.current);
-      clearTimeout(qualSavedTimerRef.current);
-      qualDebounceRef.current = setTimeout(async () => {
-        qualDirtyRef.current = false;
-        setQualSaveStatus("saving");
-        await saveGroupQual(ag, f, s);
-        setQualSaveStatus("saved");
-        qualSavedTimerRef.current = setTimeout(
-          () => setQualSaveStatus("idle"),
-          3000,
-        );
-      }, 800);
-    },
-    [ag, saveGroupQual],
-  );
-
-  // Flush pending qualifier save on unmount
-  useEffect(
-    () => () => {
-      clearTimeout(qualDebounceRef.current);
-      clearTimeout(qualSavedTimerRef.current);
-      if (qualDirtyRef.current) {
-        const { first, second } = qualPendingRef.current;
-        if (first && second && first !== second) {
-          saveGroupQual(ag, first, second);
-        }
-      }
-    },
-    [ag, saveGroupQual],
-  );
-
-  const QualSaveIndicator = () => {
-    if (qualSaveStatus === "saving")
-      return (
-        <span
-          style={{
-            fontSize: 11,
-            color: T.muted,
-            display: "flex",
-            alignItems: "center",
-            gap: 5,
-          }}
-        >
-          <span
-            style={{
-              display: "inline-block",
-              width: 8,
-              height: 8,
-              borderRadius: "50%",
-              border: `2px solid ${T.accent}`,
-              borderTopColor: "transparent",
-              animation: "spin .7s linear infinite",
-            }}
-          />
-          Saving…
-        </span>
-      );
-    if (qualSaveStatus === "saved")
-      return (
-        <span
-          style={{
-            fontSize: 11,
-            color: T.green,
-            display: "flex",
-            alignItems: "center",
-            gap: 4,
-            animation: "fadeUp .3s ease",
-          }}
-        >
-          <span style={{ fontSize: 13 }}>✓</span> Saved
-        </span>
-      );
-    if (qualSaveStatus === "dirty")
-      return (
-        <span
-          style={{
-            fontSize: 11,
-            color: T.orange,
-            display: "flex",
-            alignItems: "center",
-            gap: 5,
-          }}
-        >
-          <span
-            style={{
-              display: "inline-block",
-              width: 7,
-              height: 7,
-              borderRadius: "50%",
-              background: T.orange,
-              animation: "pulse .8s ease infinite",
-            }}
-          />
-          Unsaved
-        </span>
-      );
-    return null;
-  };
 
   return (
     <div className="fade-up">
@@ -1696,6 +1582,36 @@ function GroupPredictions() {
           );
         })}
       </div>
+      {GF[ag].some((f) => {
+        const dbM = matches.find((m) => m.id === f.id);
+        const mStatus = dbM?.status || "upcoming";
+        const mDeadline = new Date(
+          new Date(`${f.match_date}T${f.match_time}Z`).getTime() - 30 * 60000,
+        );
+        return (
+          mStatus === "live" ||
+          mStatus === "finished" ||
+          new Date() >= mDeadline
+        );
+      }) && (
+        <div
+          style={{
+            marginBottom: 12,
+            padding: "9px 14px",
+            background: `${T.muted}12`,
+            border: `1px solid ${T.muted}33`,
+            borderRadius: 9,
+            fontSize: 12,
+            color: T.muted,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          🔒 Some score predictions in Group {ag} are locked. Visit{" "}
+          <strong>Qualifiers</strong> tab to pick who advances.
+        </div>
+      )}
       <div
         style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "280px 1fr", gap: 14 }}
       >
@@ -1802,146 +1718,48 @@ function GroupPredictions() {
           ))}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div
-            style={{
-              background: T.surf,
-              border: `1px solid ${T.border}`,
-              borderRadius: 13,
-              padding: 16,
-            }}
-          >
+          <div>
             <div
               style={{
-                fontFamily: "Oswald",
-                fontSize: 15,
-                color: T.accent,
-                marginBottom: 8,
-              }}
-            >
-              🏆 Pick who qualifies from Group {ag}
-            </div>
-            <p style={{ color: T.muted, fontSize: 12, marginBottom: 10 }}>
-              You can skip the score prediction and just save your top two
-              teams.
-            </p>
-            <div style={{ display: "grid", gap: 10 }}>
-              <label
-                style={{ display: "flex", flexDirection: "column", gap: 5 }}
-              >
-                <span style={{ fontSize: 12, color: T.muted }}>1st place</span>
-                <select
-                  value={firstPick}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setFirstPick(v);
-                    triggerQualAutoSave(v, secondPick);
-                  }}
-                  style={{
-                    padding: "8px 10px",
-                    borderRadius: 8,
-                    border: `1px solid ${T.border}`,
-                    background: T.surf2,
-                    color: T.text,
-                  }}
-                >
-                  <option value="">Select team</option>
-                  {GROUPS[ag].teams.map((team) => (
-                    <option key={team} value={team}>
-                      {team}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label
-                style={{ display: "flex", flexDirection: "column", gap: 5 }}
-              >
-                <span style={{ fontSize: 12, color: T.muted }}>2nd place</span>
-                <select
-                  value={secondPick}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setSecondPick(v);
-                    triggerQualAutoSave(firstPick, v);
-                  }}
-                  style={{
-                    padding: "8px 10px",
-                    borderRadius: 8,
-                    border: `1px solid ${T.border}`,
-                    background: T.surf2,
-                    color: T.text,
-                  }}
-                >
-                  <option value="">Select team</option>
-                  {GROUPS[ag].teams.map((team) => (
-                    <option key={team} value={team}>
-                      {team}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <div
-              style={{
-                marginTop: 12,
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
+                marginBottom: 8,
               }}
             >
-              <button
-                onClick={() => {
-                  if (!firstPick || !secondPick) {
-                    alert("Choose both a first and second place team.");
-                    return;
-                  }
-                  if (firstPick === secondPick) {
-                    alert("Pick two different teams.");
-                    return;
-                  }
-                  clearTimeout(qualDebounceRef.current);
-                  clearTimeout(qualSavedTimerRef.current);
-                  qualDirtyRef.current = false;
-                  setQualSaveStatus("saving");
-                  saveGroupQual(ag, firstPick, secondPick).then(() => {
-                    setQualSaveStatus("saved");
-                    qualSavedTimerRef.current = setTimeout(
-                      () => setQualSaveStatus("idle"),
-                      3000,
-                    );
-                  });
-                }}
-                disabled={qualSaveStatus === "saving"}
+              <span
                 style={{
-                  background:
-                    qualSaveStatus === "saved" ? `${T.green}22` : T.accent,
-                  color: qualSaveStatus === "saved" ? T.green : "#000",
-                  border: `1px solid ${qualSaveStatus === "saved" ? T.green : "transparent"}`,
-                  padding: "8px 14px",
-                  borderRadius: 8,
                   fontFamily: "Oswald",
                   fontSize: 13,
-                  fontWeight: 700,
-                  opacity: qualSaveStatus === "saving" ? 0.6 : 1,
-                  transition: "all .25s",
+                  color: T.text,
+                  fontWeight: 600,
                 }}
               >
-                {qualSaveStatus === "saving"
-                  ? "Saving…"
-                  : qualSaveStatus === "saved"
-                    ? "✓ Saved"
-                    : "Save"}
-              </button>
-              <QualSaveIndicator />
+                Score Prediction
+              </span>
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  padding: "2px 7px",
+                  borderRadius: 10,
+                  background: `${T.orange}22`,
+                  color: T.orange,
+                  border: `1px solid ${T.orange}44`,
+                }}
+              >
+                BONUS · Exact +{SCORING.EXACT}pts · Correct +{SCORING.CORRECT}pt
+              </span>
             </div>
+            <MatchLinePredictor
+              key={match.id}
+              match={match}
+              groupId={ag}
+              existing={matchPreds[match.id]}
+              onSave={(hs, as) => savePrediction(ag, match.id, hs, as)}
+              T={T}
+            />
           </div>
-          <MatchLinePredictor
-            key={match.id}
-            match={match}
-            groupId={ag}
-            existing={matchPreds[match.id]}
-            onSave={(hs, as) => savePrediction(ag, match.id, hs, as)}
-            T={T}
-          />
         </div>
       </div>
     </div>
@@ -2013,7 +1831,11 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
     async (h, a) => {
       if (isLocked) return; // ⛔ BLOCK SAVE if 30 min deadline passed
       setSaveStatus(SAVE_STATUS.saving);
-      await onSave(h, a);
+      const result = await onSave(h, a);
+      if (!result) {
+        setSaveStatus(SAVE_STATUS.idle);
+        return;
+      }
       setSaveStatus(SAVE_STATUS.saved);
       setTimeout(
         () =>
@@ -2656,211 +2478,476 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
   );
 }
 
-function AllStandings() {
-  const { T, qual, groupQuals } = useU();
-  const { allStandings = {} } = qual;
-  const displayStandings = Object.entries(allStandings).reduce(
-    (acc, [g, rows]) => {
-      const picks = groupQuals[g];
-      if (!picks?.first && !picks?.second) {
-        acc[g] = rows;
-        return acc;
-      }
-      const ordered = [];
-      const seen = new Set();
-      [picks?.first, picks?.second].filter(Boolean).forEach((team) => {
-        const match = rows.find((row) => row.team === team);
-        if (match && !seen.has(team)) {
-          seen.add(team);
-          ordered.push({ ...match, predictedQualifier: true });
+function QualifiersView() {
+  const { T, groupQuals, saveGroupQual, knockouts, saveKO, isMobile } = useU();
+
+  // Local editable picks mirroring groupQuals context
+  const [localPicks, setLocalPicks] = useState(() => {
+    const init = {};
+    Object.keys(GROUPS).forEach((g) => {
+      init[g] = {
+        first: groupQuals[g]?.first || "",
+        second: groupQuals[g]?.second || "",
+      };
+    });
+    return init;
+  });
+  const [saving, setSaving] = useState({});
+  const [saved, setSaved] = useState({});
+
+  // Keep local picks in sync when context loads from DB
+  useEffect(() => {
+    setLocalPicks((prev) => {
+      const merged = { ...prev };
+      Object.keys(GROUPS).forEach((g) => {
+        if (groupQuals[g]?.first || groupQuals[g]?.second) {
+          merged[g] = {
+            first: groupQuals[g].first || "",
+            second: groupQuals[g].second || "",
+          };
         }
       });
-      rows.forEach((row) => {
-        if (!seen.has(row.team)) ordered.push(row);
-      });
-      acc[g] = ordered.map((row, index) => ({
-        ...row,
-        displayPosition: index + 1,
-      }));
-      return acc;
-    },
-    {},
-  );
+      return merged;
+    });
+  }, [groupQuals]);
+
+  const handleSaveGroup = async (g) => {
+    const { first, second } = localPicks[g] || {};
+    if (!first || !second || first === second) return;
+    setSaving((p) => ({ ...p, [g]: true }));
+    await saveGroupQual(g, first, second);
+    setSaving((p) => ({ ...p, [g]: false }));
+    setSaved((p) => ({ ...p, [g]: true }));
+    setTimeout(() => setSaved((p) => ({ ...p, [g]: false })), 2500);
+  };
+
+  // T3 picks: extract ordered array from knockouts
+  const t3Array = useMemo(() => {
+    const arr = [];
+    for (let i = 0; i < 8; i++) {
+      const team = knockouts[`t3-${i}`];
+      if (team) arr.push(team);
+    }
+    return arr;
+  }, [knockouts]);
+
+  const toggleT3 = async (team) => {
+    const idx = t3Array.indexOf(team);
+    if (idx !== -1) {
+      // Remove: shift remaining picks into consecutive slots, clear last
+      const newArr = t3Array.filter((t) => t !== team);
+      for (let i = 0; i < 8; i++) {
+        await saveKO("t3", i, newArr[i] || null);
+      }
+    } else if (t3Array.length < 8) {
+      await saveKO("t3", t3Array.length, team);
+    }
+  };
+
+  // Candidates for T3: teams not picked as 1st or 2nd in ANY group
+  const pickedTop2 = useMemo(() => {
+    const s = new Set();
+    Object.values(localPicks).forEach(({ first, second }) => {
+      if (first) s.add(first);
+      if (second) s.add(second);
+    });
+    return s;
+  }, [localPicks]);
+
+  // Per-group remaining candidates (could be 3rd or 4th)
+  const groupCandidates = useMemo(() => {
+    const map = {};
+    Object.entries(GROUPS).forEach(([g, { teams }]) => {
+      const f = localPicks[g]?.first;
+      const s = localPicks[g]?.second;
+      map[g] = teams.filter((t) => t !== f && t !== s);
+    });
+    return map;
+  }, [localPicks]);
+
+  const completedGroups = Object.keys(GROUPS).filter(
+    (g) => localPicks[g]?.first && localPicks[g]?.second
+  ).length;
+
   return (
     <div className="fade-up">
-      <h2
-        style={{
-          fontFamily: "Oswald",
-          fontSize: 20,
-          color: T.accent,
-          marginBottom: 14,
-        }}
-      >
-        All Group Standings
-      </h2>
+      {/* ── Header ── */}
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ fontFamily: "Oswald", fontSize: 22, color: T.accent, marginBottom: 4 }}>
+          Who Advances?
+        </h2>
+        <p style={{ fontSize: 12, color: T.muted }}>
+          Pick the 1st and 2nd place team from each group. Then choose 8 third-place
+          teams that qualify for the Round of 32.
+        </p>
+        <div style={{ display: "flex", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, background: `${T.green}20`, color: T.green, border: `1px solid ${T.green}44`, borderRadius: 8, padding: "2px 8px", fontWeight: 700 }}>
+            1st +{SCORING.GROUP_FIRST} pts
+          </span>
+          <span style={{ fontSize: 11, background: `${T.green}20`, color: T.green, border: `1px solid ${T.green}44`, borderRadius: 8, padding: "2px 8px", fontWeight: 700 }}>
+            2nd +{SCORING.GROUP_SECOND} pts
+          </span>
+          <span style={{ fontSize: 11, background: `${T.accent}20`, color: T.accent, border: `1px solid ${T.accent}44`, borderRadius: 8, padding: "2px 8px", fontWeight: 700 }}>
+            Both correct +{SCORING.GROUP_BOTH} bonus
+          </span>
+          <span style={{ fontSize: 11, color: T.muted }}>
+            {completedGroups}/12 groups picked
+          </span>
+        </div>
+      </div>
+
+      {/* ── Group Table ── */}
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill,minmax(320px,1fr))",
-          gap: 14,
+          background: T.surf,
+          border: `1px solid ${T.border}`,
+          borderRadius: 12,
+          overflow: "hidden",
+          marginBottom: 24,
         }}
       >
-        {Object.entries(allStandings).map(([g, rows]) => (
-          <div
-            key={g}
+        {/* Table header */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: isMobile ? "32px 1fr 1fr" : "44px 1fr 1fr auto",
+            gap: "0 8px",
+            padding: "8px 12px",
+            background: T.surf2,
+            borderBottom: `1px solid ${T.border}`,
+            fontSize: 10,
+            fontWeight: 700,
+            color: T.muted,
+            letterSpacing: 1,
+          }}
+        >
+          <span>GRP</span>
+          <span>1st Place · {FLAG("🏆")} {SCORING.GROUP_FIRST} pts</span>
+          <span>2nd Place · {SCORING.GROUP_SECOND} pts</span>
+          {!isMobile && <span></span>}
+        </div>
+        {Object.entries(GROUPS).map(([g, { teams }]) => {
+          const isSaving = saving[g];
+          const isSaved = saved[g];
+          const hasBoth = localPicks[g]?.first && localPicks[g]?.second && localPicks[g].first !== localPicks[g].second;
+          const dbSaved = groupQuals[g]?.first && groupQuals[g]?.second;
+          return (
+            <div
+              key={g}
+              style={{
+                display: "grid",
+                gridTemplateColumns: isMobile ? "32px 1fr 1fr" : "44px 1fr 1fr auto",
+                gap: "0 8px",
+                padding: "8px 12px",
+                borderBottom: `1px solid ${T.border}22`,
+                alignItems: "center",
+                background: dbSaved ? `${T.green}06` : "transparent",
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: "Oswald",
+                  fontWeight: 700,
+                  fontSize: 15,
+                  color: dbSaved ? T.green : T.accent,
+                }}
+              >
+                {g}{dbSaved && " ✓"}
+              </span>
+              <select
+                value={localPicks[g]?.first || ""}
+                onChange={(e) =>
+                  setLocalPicks((p) => ({
+                    ...p,
+                    [g]: { ...p[g], first: e.target.value },
+                  }))
+                }
+                onBlur={() => hasBoth && handleSaveGroup(g)}
+                style={{
+                  padding: "5px 7px",
+                  borderRadius: 7,
+                  border: `1px solid ${localPicks[g]?.first ? T.green + "66" : T.border}`,
+                  background: T.surf2,
+                  color: localPicks[g]?.first ? T.text : T.muted,
+                  fontSize: 12,
+                }}
+              >
+                <option value="">— 1st place —</option>
+                {teams.map((t) => (
+                  <option key={t} value={t} disabled={t === localPicks[g]?.second}>
+                    {FLAG(t)} {t}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={localPicks[g]?.second || ""}
+                onChange={(e) =>
+                  setLocalPicks((p) => ({
+                    ...p,
+                    [g]: { ...p[g], second: e.target.value },
+                  }))
+                }
+                onBlur={() => hasBoth && handleSaveGroup(g)}
+                style={{
+                  padding: "5px 7px",
+                  borderRadius: 7,
+                  border: `1px solid ${localPicks[g]?.second ? T.blue + "66" : T.border}`,
+                  background: T.surf2,
+                  color: localPicks[g]?.second ? T.text : T.muted,
+                  fontSize: 12,
+                }}
+              >
+                <option value="">— 2nd place —</option>
+                {teams.map((t) => (
+                  <option key={t} value={t} disabled={t === localPicks[g]?.first}>
+                    {FLAG(t)} {t}
+                  </option>
+                ))}
+              </select>
+              {!isMobile && (
+                <button
+                  onClick={() => handleSaveGroup(g)}
+                  disabled={!hasBoth || isSaving}
+                  style={{
+                    padding: "5px 11px",
+                    borderRadius: 7,
+                    background: isSaved
+                      ? `${T.green}22`
+                      : hasBoth
+                      ? T.accent
+                      : T.surf2,
+                    color: isSaved ? T.green : hasBoth ? "#000" : T.muted,
+                    fontWeight: 700,
+                    fontSize: 11,
+                    cursor: hasBoth && !isSaving ? "pointer" : "default",
+                    border: `1px solid ${isSaved ? T.green : "transparent"}`,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {isSaving ? "…" : isSaved ? "✓ Saved" : "Save"}
+                </button>
+              )}
+            </div>
+          );
+        })}
+        {/* Mobile: save all button */}
+        {isMobile && (
+          <div style={{ padding: 10, borderTop: `1px solid ${T.border}` }}>
+            <button
+              onClick={async () => {
+                for (const g of Object.keys(GROUPS)) {
+                  const { first, second } = localPicks[g] || {};
+                  if (first && second && first !== second) await handleSaveGroup(g);
+                }
+              }}
+              style={{
+                width: "100%",
+                padding: "10px",
+                borderRadius: 8,
+                background: T.accent,
+                color: "#000",
+                fontWeight: 700,
+                fontSize: 13,
+                fontFamily: "Oswald",
+              }}
+            >
+              Save All Qualifier Picks
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* ── Best 8 Third-Place Race ── */}
+      <div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            marginBottom: 10,
+            flexWrap: "wrap",
+          }}
+        >
+          <h3
             style={{
+              fontFamily: "Oswald",
+              fontSize: 18,
+              color: T.accent,
+            }}
+          >
+            🥉 Best 8 Third-Place Qualifiers
+          </h3>
+          <span
+            style={{
+              fontSize: 12,
+              fontWeight: 700,
+              padding: "3px 10px",
+              borderRadius: 10,
+              background: t3Array.length === 8 ? `${T.green}22` : `${T.orange}22`,
+              color: t3Array.length === 8 ? T.green : T.orange,
+              border: `1px solid ${t3Array.length === 8 ? T.green : T.orange}44`,
+            }}
+          >
+            {t3Array.length}/8 selected
+          </span>
+        </div>
+        <p style={{ fontSize: 12, color: T.muted, marginBottom: 14 }}>
+          8 of the 12 third-place finishers advance. Tap a team to add/remove them
+          from your picks. Teams shown as 1st or 2nd above are excluded.
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {Object.entries(GROUPS).map(([g, { teams }]) => {
+            const candidates = groupCandidates[g];
+            const first = localPicks[g]?.first;
+            const second = localPicks[g]?.second;
+            return (
+              <div
+                key={g}
+                style={{
+                  background: T.surf,
+                  border: `1px solid ${T.border}`,
+                  borderRadius: 10,
+                  padding: "10px 12px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: "Oswald",
+                    fontWeight: 700,
+                    fontSize: 14,
+                    color: T.muted,
+                    minWidth: 24,
+                  }}
+                >
+                  {g}
+                </span>
+                {/* 1st and 2nd picks — greyed out */}
+                {[first, second].filter(Boolean).map((team) => (
+                  <span
+                    key={team}
+                    style={{
+                      fontSize: 11,
+                      padding: "4px 9px",
+                      borderRadius: 8,
+                      background: T.surf2,
+                      color: T.muted,
+                      border: `1px solid ${T.border}`,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                    }}
+                  >
+                    {FLAG(team)} {team}
+                    <span style={{ fontSize: 9, color: T.muted, marginLeft: 2 }}>
+                      {team === first ? "1st" : "2nd"}
+                    </span>
+                  </span>
+                ))}
+                {/* Candidates */}
+                {candidates.length === 0 && !first && !second && (
+                  <span style={{ fontSize: 11, color: T.muted }}>
+                    Pick 1st &amp; 2nd above first
+                  </span>
+                )}
+                {candidates.map((team) => {
+                  const selected = t3Array.includes(team);
+                  const maxed = t3Array.length >= 8 && !selected;
+                  return (
+                    <button
+                      key={team}
+                      onClick={() => !maxed && toggleT3(team)}
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 700,
+                        padding: "5px 11px",
+                        borderRadius: 9,
+                        cursor: maxed ? "default" : "pointer",
+                        background: selected
+                          ? `${T.green}25`
+                          : maxed
+                          ? T.surf2
+                          : `${T.blue}15`,
+                        color: selected ? T.green : maxed ? T.muted : T.text,
+                        border: `1px solid ${selected ? T.green : maxed ? T.border : T.blue + "55"}`,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 5,
+                        transition: "all .15s",
+                      }}
+                    >
+                      {FLAG(team)} {team}
+                      {selected && (
+                        <span style={{ fontSize: 10, color: T.green }}>
+                          #{t3Array.indexOf(team) + 1} ✓
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+        {t3Array.length > 0 && (
+          <div
+            style={{
+              marginTop: 14,
+              padding: "12px 14px",
               background: T.surf,
               border: `1px solid ${T.border}`,
-              borderRadius: 11,
-              overflow: "hidden",
+              borderRadius: 10,
             }}
           >
             <div
               style={{
-                padding: "9px 14px",
-                background: T.surf2,
-                borderBottom: `1px solid ${T.border}`,
                 fontFamily: "Oswald",
                 fontSize: 13,
                 color: T.accent,
+                marginBottom: 8,
               }}
             >
-              Group {g}
+              Your {t3Array.length}/8 third-place qualifiers:
             </div>
-            <table
-              style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                fontSize: 11,
-              }}
-            >
-              <thead>
-                <tr style={{ color: T.muted, fontSize: 10 }}>
-                  {[
-                    "#",
-                    "Team",
-                    "P",
-                    "W",
-                    "D",
-                    "L",
-                    "GF",
-                    "GA",
-                    "GD",
-                    "Pts",
-                  ].map((h) => (
-                    <th
-                      key={h}
-                      style={{
-                        padding: "5px 6px",
-                        textAlign: h === "Team" ? "left" : "center",
-                        borderBottom: `1px solid ${T.border}`,
-                      }}
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {(rows || []).map((row, i) => (
-                  <tr
-                    key={row.team}
-                    style={{
-                      background:
-                        i < 2
-                          ? `${T.accent}0d`
-                          : i === 2
-                            ? `${T.blue}0a`
-                            : "transparent",
-                    }}
-                  >
-                    <td
-                      style={{
-                        padding: "6px",
-                        textAlign: "center",
-                        fontWeight: 700,
-                        color: i < 2 ? T.accent : i === 2 ? T.blue : T.muted,
-                      }}
-                    >
-                      {row.displayPosition || i + 1}
-                    </td>
-                    <td style={{ padding: "6px" }}>
-                      <span style={{ fontSize: 13 }}>{FLAG(row.team)}</span>
-                      <span style={{ marginLeft: 4, fontWeight: 600 }}>
-                        {row.team}
-                      </span>
-                      {(row.predictedQualifier || i < 2) && (
-                        <span
-                          className="chip"
-                          style={{
-                            marginLeft: 5,
-                            background: `${T.green}22`,
-                            color: T.green,
-                          }}
-                        >
-                          Q
-                        </span>
-                      )}
-                      {i === 2 && (
-                        <span
-                          className="chip"
-                          style={{
-                            marginLeft: 5,
-                            background: `${T.blue}22`,
-                            color: T.blue,
-                          }}
-                        >
-                          T3
-                        </span>
-                      )}
-                    </td>
-                    {[row.p, row.w, row.d, row.l, row.gf, row.ga].map(
-                      (v, vi) => (
-                        <td
-                          key={vi}
-                          style={{ padding: "6px", textAlign: "center" }}
-                        >
-                          {v}
-                        </td>
-                      ),
-                    )}
-                    <td
-                      style={{
-                        padding: "6px",
-                        textAlign: "center",
-                        color:
-                          row.gd > 0 ? T.green : row.gd < 0 ? T.red : T.text,
-                      }}
-                    >
-                      {row.gd > 0 ? "+" : ""}
-                      {row.gd}
-                    </td>
-                    <td
-                      style={{
-                        padding: "6px",
-                        textAlign: "center",
-                        fontWeight: 700,
-                        color: T.accent,
-                      }}
-                    >
-                      {row.pts}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ))}
-        {Object.keys(allStandings).length === 0 && (
-          <div
-            style={{
-              color: T.muted,
-              padding: 30,
-              gridColumn: "1/-1",
-              textAlign: "center",
-            }}
-          >
-            Predict group matches to see live standings.
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {t3Array.map((team, i) => (
+                <span
+                  key={team}
+                  style={{
+                    fontSize: 12,
+                    padding: "4px 10px",
+                    borderRadius: 8,
+                    background: `${T.green}20`,
+                    color: T.green,
+                    border: `1px solid ${T.green}44`,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  #{i + 1} {FLAG(team)} {team}
+                </span>
+              ))}
+              {Array.from({ length: 8 - t3Array.length }, (_, i) => (
+                <span
+                  key={`empty-${i}`}
+                  style={{
+                    fontSize: 12,
+                    padding: "4px 10px",
+                    borderRadius: 8,
+                    background: T.surf2,
+                    color: T.muted,
+                    border: `1px dashed ${T.border}`,
+                  }}
+                >
+                  #{t3Array.length + i + 1} — pick above
+                </span>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -2868,252 +2955,6 @@ function AllStandings() {
   );
 }
 
-function ThirdPlaceRace() {
-  const { T, qual } = useU();
-  const { thirdRows = [], qualified3 = [] } = qual;
-  return (
-    <div className="fade-up">
-      <h2
-        style={{
-          fontFamily: "Oswald",
-          fontSize: 20,
-          color: T.accent,
-          marginBottom: 6,
-        }}
-      >
-        🥉 Third-Place Team Ranking
-      </h2>
-      <p style={{ color: T.muted, fontSize: 12, marginBottom: 16 }}>
-        All 12 third-placed teams ranked together — top 8 by Points → GD → GF
-        qualify for Round of 32 regardless of their group letter.
-      </p>
-      <div
-        style={{
-          background: T.surf,
-          border: `1px solid ${T.border}`,
-          borderRadius: 12,
-          overflow: "hidden",
-          marginBottom: 14,
-        }}
-      >
-        <div
-          style={{
-            padding: "10px 14px",
-            background: T.surf2,
-            borderBottom: `1px solid ${T.border}`,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
-          <span style={{ fontFamily: "Oswald", fontSize: 13, color: T.accent }}>
-            All 12 Third-Placed Teams
-          </span>
-          <div style={{ display: "flex", gap: 8, fontSize: 11 }}>
-            <span
-              className="chip"
-              style={{ background: `${T.green}22`, color: T.green }}
-            >
-              Top 8 → Qualify
-            </span>
-            <span
-              className="chip"
-              style={{ background: `${T.red}22`, color: T.red }}
-            >
-              Bottom 4 → Out
-            </span>
-          </div>
-        </div>
-        <table
-          style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}
-        >
-          <thead>
-            <tr style={{ color: T.muted, fontSize: 10 }}>
-              {[
-                "Slot",
-                "Grp",
-                "Team",
-                "P",
-                "W",
-                "D",
-                "L",
-                "GF",
-                "GA",
-                "GD",
-                "Pts",
-                "Status",
-              ].map((h) => (
-                <th
-                  key={h}
-                  style={{
-                    padding: "6px 8px",
-                    textAlign:
-                      h === "Team" || h === "Grp" || h === "Status"
-                        ? "left"
-                        : "center",
-                    borderBottom: `1px solid ${T.border}`,
-                  }}
-                >
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {thirdRows.map((row, i) => {
-              const qualifies = i < 8;
-              const badge = getThirdPlaceBadge(i + 1);
-              return (
-                <tr
-                  key={row.team}
-                  style={{
-                    background: qualifies ? `${T.green}08` : `${T.red}08`,
-                    borderBottom: `1px solid ${T.border}22`,
-                  }}
-                >
-                  <td
-                    style={{
-                      padding: "8px",
-                      textAlign: "center",
-                      fontWeight: 700,
-                      color: qualifies ? T.green : T.red,
-                    }}
-                  >
-                    {qualifies ? `T3-${i + 1}` : "—"}
-                  </td>
-                  <td
-                    style={{ padding: "8px", fontWeight: 600, color: T.accent }}
-                  >
-                    Grp {row.group}
-                  </td>
-                  <td style={{ padding: "8px" }}>
-                    <span style={{ fontSize: 15 }}>{FLAG(row.team)}</span>
-                    <span style={{ marginLeft: 5, fontWeight: 600 }}>
-                      {row.team}
-                    </span>
-                  </td>
-                  {[row.p, row.w, row.d, row.l, row.gf, row.ga].map((v, vi) => (
-                    <td
-                      key={vi}
-                      style={{ padding: "8px", textAlign: "center" }}
-                    >
-                      {v}
-                    </td>
-                  ))}
-                  <td
-                    style={{
-                      padding: "8px",
-                      textAlign: "center",
-                      color: row.gd > 0 ? T.green : row.gd < 0 ? T.red : T.text,
-                    }}
-                  >
-                    {row.gd > 0 ? "+" : ""}
-                    {row.gd}
-                  </td>
-                  <td
-                    style={{
-                      padding: "8px",
-                      textAlign: "center",
-                      fontWeight: 700,
-                      color: T.accent,
-                    }}
-                  >
-                    {row.pts}
-                  </td>
-                  <td style={{ padding: "8px" }}>
-                    <span
-                      className="chip"
-                      style={{
-                        background: `${badge.color}22`,
-                        color: badge.color,
-                      }}
-                    >
-                      {badge.label}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-            {thirdRows.length === 0 && (
-              <tr>
-                <td
-                  colSpan={12}
-                  style={{ padding: 30, textAlign: "center", color: T.muted }}
-                >
-                  Predict group matches to see third-place rankings
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-      {qualified3.length > 0 && (
-        <div
-          style={{
-            background: T.surf,
-            border: `1px solid ${T.border}`,
-            borderRadius: 12,
-            padding: 16,
-          }}
-        >
-          <div
-            style={{
-              fontFamily: "Oswald",
-              fontSize: 14,
-              color: T.green,
-              marginBottom: 12,
-            }}
-          >
-            ✅ Qualified Third-Placed Teams
-          </div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill,minmax(180px,1fr))",
-              gap: 8,
-            }}
-          >
-            {qualified3.map((row, i) => (
-              <div
-                key={row.team}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 12px",
-                  background: T.surf2,
-                  borderRadius: 8,
-                  border: `1px solid ${T.green}44`,
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: "Oswald",
-                    fontSize: 11,
-                    color: T.green,
-                    minWidth: 28,
-                  }}
-                >
-                  T3-{i + 1}
-                </span>
-                <span style={{ fontSize: 18 }}>{FLAG(row.team)}</span>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 700 }}>
-                    {row.team}
-                  </div>
-                  <div style={{ fontSize: 10, color: T.muted }}>
-                    Grp {row.group} · {row.pts}pts · GD{row.gd > 0 ? "+" : ""}
-                    {row.gd}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 function KnockoutView({ stage, title, bracket }) {
   const { T, qual, knockouts, sfLosers, saveKO, resolve, isMobile, isTablet } = useU();
@@ -3183,15 +3024,39 @@ function KnockoutView({ stage, title, bracket }) {
             >
               <div
                 style={{
-                  fontSize: 9,
-                  color: T.muted,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
                   marginBottom: 5,
-                  textAlign: "center",
-                  fontWeight: 700,
-                  letterSpacing: 1,
                 }}
               >
-                {slot.id}
+                <span
+                  style={{
+                    fontSize: 9,
+                    color: T.muted,
+                    fontWeight: 700,
+                    letterSpacing: 1,
+                  }}
+                >
+                  {slot.id}
+                </span>
+                <span
+                  style={{
+                    fontSize: 9,
+                    fontWeight: 700,
+                    padding: "1px 5px",
+                    borderRadius: 6,
+                    background: `${T.accent}20`,
+                    color: T.accent,
+                    border: `1px solid ${T.accent}33`,
+                  }}
+                >
+                  +{
+                    stage === "sf" ? SCORING.SF_WINNER
+                    : stage === "qf" ? SCORING.QF_WINNER
+                    : SCORING.R32_WINNER
+                  } pts
+                </span>
               </div>
               <div
                 style={{
@@ -3219,7 +3084,7 @@ function KnockoutView({ stage, title, bracket }) {
                   key={ti}
                   className={`team-btn${winner === team ? " winner-glow" : ""}`}
                   onClick={() =>
-                    team !== "TBD" && !tbd && saveKO(stage, i, team)
+                    team !== "TBD" && saveKO(stage, i, team)
                   }
                   style={{
                     display: "flex",
@@ -3231,7 +3096,7 @@ function KnockoutView({ stage, title, bracket }) {
                     background: winner === team ? `${T.accent}1f` : T.surf2,
                     border: `1px solid ${winner === team ? T.accent : T.border}`,
                     opacity: winner && winner !== team ? 0.4 : 1,
-                    cursor: tbd ? "default" : "pointer",
+                    cursor: team === "TBD" ? "default" : "pointer",
                   }}
                 >
                   <span style={{ fontSize: 20 }}>{FLAG(team)}</span>
@@ -3321,13 +3186,8 @@ function ThirdPlaceMatchView() {
   const home = sfLosers["sf-0"] || "TBD",
     away = sfLosers["sf-1"] || "TBD",
     winner = knockouts["tp-0"];
-  if (!knockouts["sf-0"] || !knockouts["sf-1"])
-    return (
-      <LockedMsg
-        msg="Predict both Semi Finals to unlock the 3rd Place Match."
-        T={T}
-      />
-    );
+  const bothTBD = home === "TBD" && away === "TBD";
+  const allTeams = Object.values(GROUPS).flatMap((g) => g.teams).sort();
   return (
     <div className="fade-up" style={{ maxWidth: 540, margin: "0 auto" }}>
       <div style={{ textAlign: "center", marginBottom: 20 }}>
@@ -3345,6 +3205,11 @@ function ThirdPlaceMatchView() {
         <div style={{ fontSize: 11, color: T.muted, marginTop: 3 }}>
           📅 Jul 19, 2026 · 14:00 ET · SoFi Stadium, CA
         </div>
+        {bothTBD && (
+          <div style={{ marginTop: 8, fontSize: 11, color: T.orange }}>
+            Predict your Semi Finals to see the exact match-up, or pick directly below.
+          </div>
+        )}
       </div>
       <div
         style={{
@@ -3421,7 +3286,7 @@ function ThirdPlaceMatchView() {
             🥉 {FLAG(winner)} {winner} — 3rd Place!
           </div>
         )}
-        {!winner && (
+        {!winner && !bothTBD && (
           <p
             style={{
               textAlign: "center",
@@ -3433,6 +3298,56 @@ function ThirdPlaceMatchView() {
             Click to pick the 3rd place team
           </p>
         )}
+        {bothTBD && (
+          <div
+            style={{
+              marginTop: 14,
+              padding: "12px 14px",
+              background: `${T.blue}12`,
+              border: `1px solid ${T.blue}33`,
+              borderRadius: 9,
+            }}
+          >
+            <div style={{ fontSize: 11, color: T.muted, marginBottom: 8 }}>
+              Or pick any team directly for 3rd place:
+            </div>
+            <select
+              value={winner || ""}
+              onChange={(e) =>
+                e.target.value && saveKO("tp", 0, e.target.value)
+              }
+              style={{
+                width: "100%",
+                padding: "9px 10px",
+                borderRadius: 7,
+                border: `1px solid ${T.border}`,
+                background: T.surf2,
+                color: T.text,
+                fontSize: 14,
+              }}
+            >
+              <option value="">— Select 3rd place team —</option>
+              {allTeams.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+            {winner && (
+              <div
+                style={{
+                  marginTop: 10,
+                  textAlign: "center",
+                  color: T.accent,
+                  fontWeight: 700,
+                  fontSize: 13,
+                }}
+              >
+                🥉 {FLAG(winner)} {winner} — 3rd Place!
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3443,10 +3358,8 @@ function FinalView() {
   const home = knockouts["sf-0"] || "TBD",
     away = knockouts["sf-1"] || "TBD",
     champion = knockouts["final-0"];
-  if (!knockouts["sf-0"] || !knockouts["sf-1"])
-    return (
-      <LockedMsg msg="Predict both Semi Finals to unlock The Final." T={T} />
-    );
+  const bothTBD = home === "TBD" && away === "TBD";
+  const allTeams = Object.values(GROUPS).flatMap((g) => g.teams).sort();
   return (
     <div className="fade-up" style={{ maxWidth: 540, margin: "0 auto" }}>
       <div style={{ textAlign: "center", marginBottom: 22 }}>
@@ -3464,6 +3377,11 @@ function FinalView() {
         <div style={{ fontSize: 11, color: T.muted, marginTop: 3 }}>
           📅 Jul 19, 2026 · 19:00 ET · MetLife Stadium, NJ
         </div>
+        {bothTBD && (
+          <div style={{ marginTop: 8, fontSize: 11, color: T.orange }}>
+            Predict your Semi Finals to see the exact finalists, or pick directly below.
+          </div>
+        )}
       </div>
       <div
         style={{
@@ -3544,7 +3462,7 @@ function FinalView() {
             2026!
           </div>
         )}
-        {!champion && (
+        {!champion && !bothTBD && (
           <p
             style={{
               textAlign: "center",
@@ -3555,6 +3473,56 @@ function FinalView() {
           >
             Click a team to crown your World Champion
           </p>
+        )}
+        {bothTBD && (
+          <div
+            style={{
+              marginTop: 16,
+              padding: "12px 14px",
+              background: `${T.blue}12`,
+              border: `1px solid ${T.blue}33`,
+              borderRadius: 9,
+            }}
+          >
+            <div style={{ fontSize: 11, color: T.muted, marginBottom: 8 }}>
+              Or pick your World Champion directly:
+            </div>
+            <select
+              value={champion || ""}
+              onChange={(e) =>
+                e.target.value && saveKO("final", 0, e.target.value)
+              }
+              style={{
+                width: "100%",
+                padding: "9px 10px",
+                borderRadius: 7,
+                border: `1px solid ${T.border}`,
+                background: T.surf2,
+                color: T.text,
+                fontSize: 14,
+              }}
+            >
+              <option value="">— Select World Champion —</option>
+              {allTeams.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+            {champion && (
+              <div
+                style={{
+                  marginTop: 10,
+                  textAlign: "center",
+                  color: T.accent,
+                  fontWeight: 700,
+                  fontSize: 13,
+                }}
+              >
+                🏆 {FLAG(champion)} {champion} is your predicted World Champion 2026!
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -3971,7 +3939,7 @@ function LeaderboardView() {
   };
 
   const hasMore = players.length < total;
-  const headers = ["Rank", "Player", "Country", "Points", "Accuracy %", "Exact", "Correct", "Total", "Won", "Lost"];
+  const headers = ["Rank", "Player", "Country", "Points", "Group", "KO", "Bonus", "Exact", "Won", "Total"];
 
   return (
     <div className="fade-up">
@@ -4040,7 +4008,10 @@ function LeaderboardView() {
                   </div>
                   <div style={{ textAlign: "right", flexShrink: 0 }}>
                     <div style={{ fontFamily: "Oswald", fontSize: 18, fontWeight: 700, color: T.accent, lineHeight: 1 }}>{u.total_points}</div>
-                    <div style={{ fontSize: 10, color: T.muted, marginTop: 2 }}>pts</div>
+                    <div style={{ fontSize: 9, color: T.muted, marginTop: 2, display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                      <span style={{ color: T.green }}>{u.group_qual_points ?? 0}g</span>
+                      <span style={{ color: T.blue }}>{(u.knockout_points ?? ((u.knockout_r32_points || 0) + (u.knockout_r16_points || 0) + (u.knockout_qf_points || 0) + (u.knockout_sf_points || 0) + (u.knockout_final_points || 0)))}ko</span>
+                    </div>
                   </div>
                 </div>
               );
@@ -4085,16 +4056,26 @@ function LeaderboardView() {
                     </td>
                     <td style={{ padding: "9px 10px", color: T.muted, whiteSpace: "nowrap" }}>{u.country || "—"}</td>
                     <td style={{ padding: "9px 10px", fontFamily: "Oswald", fontSize: 16, fontWeight: 700, color: T.accent }}>{u.total_points}</td>
-                    <td style={{ padding: "9px 10px", color: T.green, whiteSpace: "nowrap" }}>{u.accuracy_pct ?? 0}%</td>
+                    <td style={{ padding: "9px 10px", color: T.green, fontWeight: 600 }}>
+                      {u.group_qual_points ?? 0}
+                    </td>
+                    <td style={{ padding: "9px 10px" }}>
+                      <span style={{ background: `${T.blue}22`, color: T.blue, borderRadius: 4, padding: "1px 6px", fontSize: 11, fontWeight: 700 }}>
+                        {(u.knockout_points ?? (
+                          (u.knockout_r32_points || 0) + (u.knockout_r16_points || 0) +
+                          (u.knockout_qf_points  || 0) + (u.knockout_sf_points  || 0) +
+                          (u.knockout_final_points || 0)
+                        ))}
+                      </span>
+                    </td>
+                    <td style={{ padding: "9px 10px", color: T.muted, fontSize: 11 }}>
+                      {u.score_bonus_points ?? 0}
+                    </td>
                     <td style={{ padding: "9px 10px" }}>
                       <span style={{ background: `${T.accent}22`, color: T.accent, borderRadius: 4, padding: "1px 6px", fontSize: 11, fontWeight: 700 }}>{u.exact_predictions || 0}</span>
                     </td>
-                    <td style={{ padding: "9px 10px" }}>
-                      <span style={{ background: `${T.green}22`, color: T.green, borderRadius: 4, padding: "1px 6px", fontSize: 11, fontWeight: 700 }}>{u.correct_predictions || 0}</span>
-                    </td>
-                    <td style={{ padding: "9px 10px", color: T.text }}>{u.total_predictions || 0}</td>
                     <td style={{ padding: "9px 10px", color: T.green, fontWeight: 600 }}>{u.predictions_won || 0}</td>
-                    <td style={{ padding: "9px 10px", color: T.red, fontWeight: 600 }}>{u.predictions_lost || 0}</td>
+                    <td style={{ padding: "9px 10px", color: T.text }}>{u.total_predictions || 0}</td>
                   </tr>
                 );
               })}
@@ -4263,21 +4244,95 @@ function AdminApp({ T, dark, setDark }) {
   const [auditLog, setAudit] = useState([]);
   const [allPreds, setAllPreds] = useState([]);
   const [loading, setLoading] = useState(false);
+  // Scoring tab state
+  const [groupStandings, setGroupStandings] = useState({});
+  const [groupInputs, setGroupInputs] = useState({});
+  const [koInputs, setKoInputs] = useState({});
+  const [scoringMsg, setScoringMsg] = useState(null);
+  const [scoringBusy, setScoringBusy] = useState(false);
+
   useEffect(() => {
     adminGetAllUsers().then(({ data }) => setUsers(data || []));
     adminGetAuditLog(300).then(({ data }) => setAudit(data || []));
     adminGetAllPredictions().then(({ data }) => setAllPreds(data || []));
+    getGroupStandings().then(({ data }) => {
+      if (data) {
+        const map = {};
+        data.forEach((r) => { map[r.group_id] = r; });
+        setGroupStandings(map);
+        // Pre-fill inputs from saved standings
+        const inputs = {};
+        data.forEach((r) => {
+          inputs[r.group_id] = { first: r.first_place, second: r.second_place };
+        });
+        setGroupInputs(inputs);
+      }
+    });
   }, []);
+
   const loadUserPreds = async (uid) => {
     setLoading(true);
     const { data } = await adminGetUserPredictions(uid);
     setUserP(data || []);
     setLoading(false);
   };
+
+  const handleScoreGroup = async (g) => {
+    const inp = groupInputs[g] || {};
+    if (!inp.first || !inp.second || inp.first === inp.second) {
+      setScoringMsg({ type: "error", text: `Group ${g}: pick two different teams.` });
+      return;
+    }
+    setScoringBusy(true);
+    setScoringMsg(null);
+    const { data, error } = await adminScoreGroupQual(g, inp.first, inp.second);
+    setScoringBusy(false);
+    if (error) {
+      setScoringMsg({ type: "error", text: `Group ${g} error: ${error.message}` });
+    } else {
+      setScoringMsg({ type: "ok", text: `Group ${g} scored — ${data} users updated.` });
+      setGroupStandings((prev) => ({
+        ...prev,
+        [g]: { first_place: inp.first, second_place: inp.second },
+      }));
+    }
+  };
+
+  const handleScoreKO = async (stage, slotIndex) => {
+    const key = `${stage}-${slotIndex}`;
+    const winner = koInputs[key];
+    if (!winner) {
+      setScoringMsg({ type: "error", text: `Select actual winner for ${key}.` });
+      return;
+    }
+    setScoringBusy(true);
+    setScoringMsg(null);
+    const { data, error } = await adminScoreKnockoutSlot(stage, slotIndex, winner);
+    setScoringBusy(false);
+    if (error) {
+      setScoringMsg({ type: "error", text: `${key} error: ${error.message}` });
+    } else {
+      setScoringMsg({ type: "ok", text: `${key} scored — ${data} users updated.` });
+    }
+  };
+
+  const handleRefreshAll = async () => {
+    setScoringBusy(true);
+    setScoringMsg(null);
+    const { data, error } = await adminRefreshAllStats();
+    setScoringBusy(false);
+    if (error) {
+      setScoringMsg({ type: "error", text: `Refresh error: ${error.message}` });
+    } else {
+      setScoringMsg({ type: "ok", text: `Refreshed stats for ${data.refreshed} users.` });
+    }
+  };
+
   const nav = [
     { id: "overview", icon: "📊", label: "Overview" },
     { id: "users", icon: "👥", label: "All Users" },
     { id: "preds", icon: "⚽", label: "All Predictions" },
+    { id: "scoring", icon: "🏆", label: "Scoring" },
     { id: "audit", icon: "📋", label: "Audit Log" },
   ];
   return (
@@ -5006,6 +5061,358 @@ function AdminApp({ T, dark, setDark }) {
               </div>
             </div>
           )}
+          {view === "scoring" && (
+            <div className="fade-up">
+              {/* Scoring feedback banner */}
+              {scoringMsg && (
+                <div
+                  style={{
+                    marginBottom: 14,
+                    padding: "10px 14px",
+                    borderRadius: 9,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    background: scoringMsg.type === "ok"
+                      ? `${T.green}18` : `${T.red}18`,
+                    border: `1px solid ${scoringMsg.type === "ok"
+                      ? T.green : T.red}44`,
+                    color: scoringMsg.type === "ok" ? T.green : T.red,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  {scoringMsg.type === "ok" ? "✅" : "❌"} {scoringMsg.text}
+                </div>
+              )}
+
+              {/* Points reference card */}
+              <div
+                style={{
+                  background: T.surf,
+                  border: `1px solid ${T.border}`,
+                  borderRadius: 12,
+                  padding: "14px 16px",
+                  marginBottom: 18,
+                  fontSize: 11,
+                  color: T.muted,
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+                  gap: "6px 18px",
+                }}
+              >
+                {[
+                  ["Group 1st correct", "+5 pts"],
+                  ["Group 2nd correct", "+5 pts"],
+                  ["Both qualifiers (any order)", "+3 pts"],
+                  ["R32 winner correct", "+2 pts"],
+                  ["R16 winner correct", "+2 pts"],
+                  ["QF winner correct", "+3 pts"],
+                  ["SF winner correct", "+5 pts"],
+                  ["3rd place correct", "+2 pts"],
+                  ["Champion correct", "+10 pts"],
+                  ["Exact score (bonus)", "+3 pts"],
+                  ["Correct outcome (bonus)", "+1 pt"],
+                ].map(([label, pts]) => (
+                  <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                    <span>{label}</span>
+                    <span style={{ color: T.accent, fontWeight: 700, whiteSpace: "nowrap" }}>{pts}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* ── Group Stage Scoring ── */}
+              <div
+                style={{
+                  fontFamily: "Oswald",
+                  fontSize: 15,
+                  color: T.accent,
+                  marginBottom: 10,
+                }}
+              >
+                Group Stage Qualification Scoring
+              </div>
+              <div
+                style={{
+                  background: T.surf,
+                  border: `1px solid ${T.border}`,
+                  borderRadius: 12,
+                  overflow: "hidden",
+                  marginBottom: 22,
+                }}
+              >
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "36px 1fr 1fr auto",
+                    gap: "0 10px",
+                    padding: "8px 14px",
+                    background: T.surf2,
+                    borderBottom: `1px solid ${T.border}`,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    color: T.muted,
+                    letterSpacing: 1,
+                  }}
+                >
+                  <span>GRP</span><span>1st Place</span><span>2nd Place</span><span></span>
+                </div>
+                {Object.keys(GROUPS).map((g) => {
+                  const inp = groupInputs[g] || {};
+                  const saved = groupStandings[g];
+                  const teams = GROUPS[g].teams;
+                  return (
+                    <div
+                      key={g}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "36px 1fr 1fr auto",
+                        gap: "0 10px",
+                        padding: "9px 14px",
+                        borderBottom: `1px solid ${T.border}22`,
+                        alignItems: "center",
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontFamily: "Oswald",
+                          fontWeight: 700,
+                          fontSize: 13,
+                          color: saved ? T.green : T.accent,
+                        }}
+                      >
+                        {g}
+                        {saved && " ✓"}
+                      </span>
+                      <select
+                        value={inp.first || ""}
+                        onChange={(e) =>
+                          setGroupInputs((p) => ({
+                            ...p,
+                            [g]: { ...p[g], first: e.target.value },
+                          }))
+                        }
+                        style={{
+                          padding: "5px 7px",
+                          borderRadius: 6,
+                          border: `1px solid ${T.border}`,
+                          background: T.surf2,
+                          color: T.text,
+                          fontSize: 12,
+                        }}
+                      >
+                        <option value="">— 1st —</option>
+                        {teams.map((t) => (
+                          <option key={t} value={t}>{t}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={inp.second || ""}
+                        onChange={(e) =>
+                          setGroupInputs((p) => ({
+                            ...p,
+                            [g]: { ...p[g], second: e.target.value },
+                          }))
+                        }
+                        style={{
+                          padding: "5px 7px",
+                          borderRadius: 6,
+                          border: `1px solid ${T.border}`,
+                          background: T.surf2,
+                          color: T.text,
+                          fontSize: 12,
+                        }}
+                      >
+                        <option value="">— 2nd —</option>
+                        {teams.filter((t) => t !== inp.first).map((t) => (
+                          <option key={t} value={t}>{t}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => handleScoreGroup(g)}
+                        disabled={scoringBusy || !inp.first || !inp.second}
+                        style={{
+                          padding: "5px 12px",
+                          borderRadius: 7,
+                          background:
+                            !inp.first || !inp.second
+                              ? T.surf2 : T.accent,
+                          color:
+                            !inp.first || !inp.second
+                              ? T.muted : "#000",
+                          fontWeight: 700,
+                          fontSize: 11,
+                          cursor:
+                            !inp.first || !inp.second
+                              ? "default" : "pointer",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        Score
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* ── Knockout Stage Scoring ── */}
+              {[
+                { stage: "r32", label: "Round of 32", count: 16, pts: "+2 pts" },
+                { stage: "r16", label: "Round of 16", count: 8,  pts: "+2 pts" },
+                { stage: "qf",  label: "Quarter Finals", count: 4, pts: "+3 pts" },
+                { stage: "sf",  label: "Semi Finals",  count: 2,  pts: "+5 pts" },
+                { stage: "tp",  label: "3rd Place Match", count: 1, pts: "+2 pts" },
+                { stage: "final", label: "The Final",  count: 1,  pts: "+10 pts" },
+              ].map(({ stage, label, count, pts }) => (
+                <div key={stage} style={{ marginBottom: 18 }}>
+                  <div
+                    style={{
+                      fontFamily: "Oswald",
+                      fontSize: 14,
+                      color: T.accent,
+                      marginBottom: 8,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                    }}
+                  >
+                    {label}
+                    <span
+                      style={{
+                        fontSize: 10,
+                        background: `${T.accent}22`,
+                        color: T.accent,
+                        borderRadius: 5,
+                        padding: "2px 7px",
+                        fontFamily: "Rajdhani",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {pts} per correct pick
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      background: T.surf,
+                      border: `1px solid ${T.border}`,
+                      borderRadius: 11,
+                      overflow: "hidden",
+                    }}
+                  >
+                    {Array.from({ length: count }, (_, i) => {
+                      const key = `${stage}-${i}`;
+                      return (
+                        <div
+                          key={key}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 10,
+                            padding: "8px 14px",
+                            borderBottom: i < count - 1 ? `1px solid ${T.border}22` : "none",
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontSize: 10,
+                              color: T.muted,
+                              minWidth: 60,
+                              fontWeight: 700,
+                            }}
+                          >
+                            Match {i + 1}
+                          </span>
+                          <input
+                            type="text"
+                            placeholder="Actual winner team name"
+                            value={koInputs[key] || ""}
+                            onChange={(e) =>
+                              setKoInputs((p) => ({ ...p, [key]: e.target.value }))
+                            }
+                            style={{
+                              flex: 1,
+                              padding: "5px 9px",
+                              borderRadius: 6,
+                              border: `1px solid ${T.border}`,
+                              background: T.surf2,
+                              color: T.text,
+                              fontSize: 12,
+                            }}
+                          />
+                          <button
+                            onClick={() => handleScoreKO(stage, i)}
+                            disabled={scoringBusy || !koInputs[key]}
+                            style={{
+                              padding: "5px 12px",
+                              borderRadius: 7,
+                              background: !koInputs[key] ? T.surf2 : T.accent,
+                              color: !koInputs[key] ? T.muted : "#000",
+                              fontWeight: 700,
+                              fontSize: 11,
+                              cursor: !koInputs[key] ? "default" : "pointer",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            Score
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+
+              {/* ── Refresh All Stats ── */}
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: "14px 16px",
+                  background: T.surf,
+                  border: `1px solid ${T.border}`,
+                  borderRadius: 12,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                }}
+              >
+                <div>
+                  <div
+                    style={{
+                      fontFamily: "Oswald",
+                      fontSize: 13,
+                      color: T.text,
+                      fontWeight: 700,
+                    }}
+                  >
+                    Rebuild All User Stats
+                  </div>
+                  <div style={{ fontSize: 11, color: T.muted, marginTop: 3 }}>
+                    Recalculates total_points from all sources for every user.
+                    Safe to run at any time.
+                  </div>
+                </div>
+                <button
+                  onClick={handleRefreshAll}
+                  disabled={scoringBusy}
+                  style={{
+                    padding: "9px 18px",
+                    borderRadius: 8,
+                    background: T.blue,
+                    color: "#fff",
+                    fontWeight: 700,
+                    fontSize: 12,
+                    cursor: scoringBusy ? "wait" : "pointer",
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                  }}
+                >
+                  {scoringBusy ? "Working…" : "Refresh All"}
+                </button>
+              </div>
+            </div>
+          )}
+
           {view === "audit" && (
             <div className="fade-up">
               <div
