@@ -37,6 +37,15 @@ const normalizeUsername = (value) => {
 };
 
 // ─── Profile helpers ──────────────────────────────────────────────────────────
+export const isUsernameTaken = async (username) => {
+  const { data } = await supabase
+    .from("profiles")
+    .select("id")
+    .ilike("username", username.trim())
+    .maybeSingle();
+  return !!data;
+};
+
 export const getProfile = async (userId) => {
   const { data, error } = await supabase
     .from("profiles")

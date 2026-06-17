@@ -25,6 +25,7 @@ import {
   signIn,
   signUp,
   signOut,
+  isUsernameTaken,
   getUserPredictions,
   getUserGroupQuals,
   getUserKnockoutPreds,
@@ -391,6 +392,9 @@ function AuthPage({ T, dark, setDark }) {
       if (error) setErr(error.message);
     } else {
       if (!uname.trim()) { setErr("Username required"); setBusy(false); return; }
+
+      const taken = await isUsernameTaken(uname);
+      if (taken) { setErr("Username already exists"); setBusy(false); return; }
 
       const { data, error } = await signUp(email, pw, uname, country || null);
 
