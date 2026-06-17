@@ -803,9 +803,13 @@ function UserApp({ T, dark, setDark }) {
     data.map((u, i) => ({
       ...u,
       rank: i + 1,
-      accuracy_pct: u.total_predictions > 0
-        ? Math.round((u.correct_predictions || 0) / (u.total_predictions || 1) * 100)
-        : 0,
+      // Use server-provided accuracy_pct (computed from stored profile totals,
+      // accurate for every user). predictions_won = correct_bets (exact+correct).
+      accuracy_pct: u.accuracy_pct ?? (
+        u.total_predictions > 0
+          ? Math.round((u.predictions_won || 0) / u.total_predictions * 100)
+          : 0
+      ),
       total_predictions: u.total_predictions || 0,
     }));
 

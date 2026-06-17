@@ -242,15 +242,20 @@ export const getCommunityOdds = async (matchId) =>
 // Fetch registered users from the leaderboard view.
 // Supports search (by username or country), pagination (page 0-based), and
 // configurable page size — suitable for millions of users via server-side filtering.
+// Ordering mirrors the view's RANK() window: points → exact → correct → accuracy → reg date.
 export const getPlayers = async ({ page = 0, limit = 50, search = "" } = {}) => {
   let q = supabase
     .from("leaderboard")
     .select("*", { count: "exact" })
-    .order("total_points", { ascending: false })
-    .order("accuracy_pct", { ascending: false })
+    .order("total_points",       { ascending: false })
+    .order("exact_predictions",  { ascending: false })
+    .order("predictions_won",    { ascending: false })
+    .order("accuracy_pct",       { ascending: false })
+    .order("created_at",         { ascending: true  })
     .range(page * limit, page * limit + limit - 1);
 
   if (search?.trim()) {
+    // Search username always; fall back gracefully if country is NULL
     q = q.or(`username.ilike.%${search.trim()}%,country.ilike.%${search.trim()}%`);
   }
 
@@ -258,12 +263,17 @@ export const getPlayers = async ({ page = 0, limit = 50, search = "" } = {}) => 
 };
 
 // ─── Leaderboard ──────────────────────────────────────────────────────────────
-export const getLeaderboard = async (limit = 100) =>
+// Top-N leaderboard for context state (HomeView rank badge, MyPredictions rank).
+// Ordering mirrors the view's RANK() tiebreak exactly.
+export const getLeaderboard = async (limit = 500) =>
   supabase
     .from("leaderboard")
     .select("*")
-    .order("total_points", { ascending: false })
-    .order("accuracy_pct", { ascending: false })
+    .order("total_points",      { ascending: false })
+    .order("exact_predictions", { ascending: false })
+    .order("predictions_won",   { ascending: false })
+    .order("accuracy_pct",      { ascending: false })
+    .order("created_at",        { ascending: true  })
     .limit(limit);
 
 // ─── Admin helpers ────────────────────────────────────────────────────────────
