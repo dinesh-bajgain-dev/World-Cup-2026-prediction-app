@@ -60,6 +60,19 @@ import {
   FINAL_MATCH,
 } from "../lib/qualification";
 
+// ─── Responsive breakpoints & window-size hook ───────────────────────────────
+const BP = { sm: 480, md: 768, lg: 1024 };
+function useWindowSize() {
+  const [w, setW] = useState(window.innerWidth);
+  useEffect(() => {
+    const h = () => setW(window.innerWidth);
+    window.addEventListener("resize", h);
+    return () => window.removeEventListener("resize", h);
+  }, []);
+  return w;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ─── Dynamic Data Helpers (Replaces Hardcoded TEAMS/GROUPS) ─────────────────
 // Helper to get flag emoji from team name (simple mapping for now)
 const getTeamFlag = (teamName) => {
@@ -297,7 +310,7 @@ function App() {
 function GS({ T }) {
   const a = T.accent;
   return (
-    <style>{`*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Rajdhani',sans-serif}::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:${a}55;border-radius:4px}@keyframes fadeUp{from{transform:translateY(14px);opacity:0}to{transform:translateY(0);opacity:1}}@keyframes spin{to{transform:rotate(360deg)}}@keyframes glow{0%,100%{box-shadow:0 0 8px ${a}44}50%{box-shadow:0 0 24px ${a}99}}@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}.fade-up{animation:fadeUp .4s ease forwards}.nav-item:hover{background:${a}18!important;transform:translateX(2px)}.nav-item.active{background:${a}28!important;border-left:3px solid ${a}!important}.card-hover{transition:transform .2s,box-shadow .2s}.card-hover:hover{transform:translateY(-2px);box-shadow:0 10px 28px rgba(0,0,0,.35)!important}.team-btn{transition:all .15s;cursor:pointer}.team-btn:hover{transform:scale(1.02)}.winner-glow{animation:glow 2s infinite}.trophy-spin{animation:spin 3.5s linear infinite}.celebrate{animation:pulse .5s ease infinite}button{cursor:pointer;border:none;outline:none;font-family:Rajdhani}input,select{font-family:Rajdhani}.chip{display:inline-flex;align-items:center;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}input[type=range]{accent-color:${a};cursor:pointer;width:100%}`}</style>
+    <style>{`*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Rajdhani',sans-serif}::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:${a}55;border-radius:4px}@keyframes fadeUp{from{transform:translateY(14px);opacity:0}to{transform:translateY(0);opacity:1}}@keyframes spin{to{transform:rotate(360deg)}}@keyframes glow{0%,100%{box-shadow:0 0 8px ${a}44}50%{box-shadow:0 0 24px ${a}99}}@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}.fade-up{animation:fadeUp .4s ease forwards}.nav-item:hover{background:${a}18!important;transform:translateX(2px)}.nav-item.active{background:${a}28!important;border-left:3px solid ${a}!important}.card-hover{transition:transform .2s,box-shadow .2s}.card-hover:hover{transform:translateY(-2px);box-shadow:0 10px 28px rgba(0,0,0,.35)!important}.team-btn{transition:all .15s;cursor:pointer}.team-btn:hover{transform:scale(1.02)}.winner-glow{animation:glow 2s infinite}.trophy-spin{animation:spin 3.5s linear infinite}.celebrate{animation:pulse .5s ease infinite}button{cursor:pointer;border:none;outline:none;font-family:Rajdhani}input,select{font-family:Rajdhani}.chip{display:inline-flex;align-items:center;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}input[type=range]{accent-color:${a};cursor:pointer;width:100%}@media(max-width:767px){input,select,textarea{font-size:16px!important}button{min-height:44px}.mobile-scroll-hint{-webkit-overflow-scrolling:touch}}.safe-bottom{padding-bottom:env(safe-area-inset-bottom)}`}</style>
   );
 }
 function IField({ label, val, set, T, type = "text", ph = "" }) {
@@ -321,12 +334,12 @@ function IField({ label, val, set, T, type = "text", ph = "" }) {
         placeholder={ph}
         style={{
           width: "100%",
-          padding: "10px 12px",
+          padding: "11px 12px",
           background: T.surf2,
           border: `1px solid ${T.border}`,
           borderRadius: 8,
           color: T.text,
-          fontSize: 14,
+          fontSize: 16,
           outline: "none",
         }}
       />
@@ -731,10 +744,21 @@ function lsWrite(patch) {
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
+const BOTTOM_NAV = [
+  { id: "home",        icon: "🏠", label: "Home" },
+  { id: "groups",      icon: "🏟", label: "Groups" },
+  { id: "leaderboard", icon: "🏅", label: "Ranking" },
+  { id: "mypreds",     icon: "📋", label: "My Picks" },
+  { id: "__more__",    icon: "☰",  label: "More" },
+];
 function UserApp({ T, dark, setDark }) {
   const { profile } = useAuth();
+  const screenW = useWindowSize();
+  const isMobile = screenW < BP.md;
+  const isTablet = screenW >= BP.md && screenW < BP.lg;
   const [view, setView] = useState("home");
   const [sidebar, setSidebar] = useState(true);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [groupResults, setGR] = useState(() => lsRead().groupResults || {});
   const [groupQuals, setGQ] = useState(() => lsRead().groupQuals || {});
   const [knockouts, setKO] = useState(() => lsRead().knockouts || {});
@@ -1054,6 +1078,8 @@ const savePrediction = async (gId, matchId, hs, as) => {
     totalPreds,
     accMul,
     showToast,
+    isMobile,
+    isTablet,
   };
   return (
     <UCtx.Provider value={ctx}>
@@ -1071,289 +1097,185 @@ const savePrediction = async (gId, matchId, hs, as) => {
           rel="stylesheet"
         />
         <GS T={T} />
-        {toast && <Toast msg={toast.msg} type={toast.type} T={T} />}
-        <aside
-          style={{
-            width: sidebar ? 228 : 62,
-            minWidth: sidebar ? 228 : 62,
-            background: T.dm ? "#06090f" : "#111827",
-            borderRight: `1px solid ${T.border}`,
-            display: "flex",
-            flexDirection: "column",
-            transition: "width .3s",
-            position: "sticky",
-            top: 0,
-            height: "100vh",
-            overflow: "hidden",
-            flexShrink: 0,
-            zIndex: 10,
-          }}
-        >
-          <div
+        {toast && <Toast msg={toast.msg} type={toast.type} T={T} isMobile={isMobile} />}
+
+        {/* ── Desktop / tablet sidebar ──────────────────────────────────────── */}
+        {!isMobile && (
+          <aside
             style={{
-              padding: "13px 12px",
-              borderBottom: "1px solid rgba(255,255,255,0.07)",
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-            }}
-          >
-            <span style={{ fontSize: 24, flexShrink: 0 }}>🏆</span>
-            {sidebar && (
-              <div>
-                <div
-                  style={{
-                    fontFamily: "Oswald",
-                    fontSize: 13,
-                    fontWeight: 700,
-                    color: T.accent,
-                    letterSpacing: 1,
-                  }}
-                >
-                  FIFA WC 2026
-                </div>
-                <div style={{ fontSize: 10, color: T.muted }}>
-                  Prediction Platform
-                </div>
-              </div>
-            )}
-          </div>
-          {sidebar && profile && (
-            <div
-              style={{
-                padding: "9px 12px",
-                borderBottom: `1px solid ${T.border}`,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-              }}
-            >
-              <div
-                style={{
-                  width: 30,
-                  height: 30,
-                  borderRadius: "50%",
-                  background: `${T.accent}33`,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 13,
-                  fontWeight: 700,
-                  color: T.accent,
-                  flexShrink: 0,
-                }}
-              >
-                {profile.username[0].toUpperCase()}
-              </div>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 700 }}>
-                  {profile.username}
-                </div>
-                <div style={{ fontSize: 10, color: T.accent }}>
-                  {profile.total_points || 0} pts · {fmtOdds(accMul)}
-                </div>
-              </div>
-            </div>
-          )}
-          <div style={{ flex: 1, overflowY: "auto", padding: "5px 0" }}>
-            {nav.map((item) => (
-              <div
-                key={item.id}
-                onClick={() => setView(item.id)}
-                className={`nav-item${view === item.id ? " active" : ""}`}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "8px 13px",
-                  borderLeft: "3px solid transparent",
-                  cursor: "pointer",
-                  color: view === item.id ? T.accent : T.text,
-                }}
-              >
-                <span
-                  style={{
-                    fontSize:
-                      /\d/.test(item.icon) && item.icon.length <= 2 ? 11 : 16,
-                    fontWeight: 700,
-                    minWidth: 22,
-                    textAlign: "center",
-                    color: view === item.id ? T.accent : T.muted,
-                  }}
-                >
-                  {item.icon}
-                </span>
-                {sidebar && (
-                  <span
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 600,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {item.label}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-          <div
-            style={{
-              padding: "9px",
-              borderTop: "1px solid rgba(255,255,255,0.07)",
+              width: sidebar ? 228 : 62,
+              minWidth: sidebar ? 228 : 62,
+              background: T.dm ? "#06090f" : "#111827",
+              borderRight: `1px solid ${T.border}`,
               display: "flex",
               flexDirection: "column",
-              gap: 5,
+              transition: "width .3s",
+              position: "sticky",
+              top: 0,
+              height: "100vh",
+              overflow: "hidden",
+              flexShrink: 0,
+              zIndex: 10,
             }}
           >
-            <button
-              onClick={() => setDark(!dark)}
-              style={{
-                background: T.surf2,
-                color: T.text,
-                borderRadius: 7,
-                padding: "6px 10px",
-                fontSize: 12,
-                fontWeight: 600,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 5,
-              }}
-            >
-              {dark ? "☀️" : "🌙"}
-              {sidebar && (dark ? " Light" : " Dark")}
-            </button>
-            {sidebar && (
-              <button
-                onClick={() => signOut()}
-                style={{
-                  background: "#7f1d1d33",
-                  color: "#ef4444",
-                  borderRadius: 7,
-                  padding: "6px",
-                  fontSize: 12,
-                  fontWeight: 600,
-                }}
-              >
+            <div style={{ padding: "13px 12px", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 24, flexShrink: 0 }}>🏆</span>
+              {sidebar && (
+                <div>
+                  <div style={{ fontFamily: "Oswald", fontSize: 13, fontWeight: 700, color: T.accent, letterSpacing: 1 }}>FIFA WC 2026</div>
+                  <div style={{ fontSize: 10, color: T.muted }}>Prediction Platform</div>
+                </div>
+              )}
+            </div>
+            {sidebar && profile && (
+              <div style={{ padding: "9px 12px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ width: 30, height: 30, borderRadius: "50%", background: `${T.accent}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: T.accent, flexShrink: 0 }}>
+                  {profile.username[0].toUpperCase()}
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700 }}>{profile.username}</div>
+                  <div style={{ fontSize: 10, color: T.accent }}>{profile.total_points || 0} pts · {fmtOdds(accMul)}</div>
+                </div>
+              </div>
+            )}
+            <div style={{ flex: 1, overflowY: "auto", padding: "5px 0" }}>
+              {nav.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => setView(item.id)}
+                  className={`nav-item${view === item.id ? " active" : ""}`}
+                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 13px", borderLeft: "3px solid transparent", cursor: "pointer", color: view === item.id ? T.accent : T.text }}
+                >
+                  <span style={{ fontSize: /\d/.test(item.icon) && item.icon.length <= 2 ? 11 : 16, fontWeight: 700, minWidth: 22, textAlign: "center", color: view === item.id ? T.accent : T.muted }}>
+                    {item.icon}
+                  </span>
+                  {sidebar && <span style={{ fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" }}>{item.label}</span>}
+                </div>
+              ))}
+            </div>
+            <div style={{ padding: "9px", borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", flexDirection: "column", gap: 5 }}>
+              <button onClick={() => setDark(!dark)} style={{ background: T.surf2, color: T.text, borderRadius: 7, padding: "6px 10px", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                {dark ? "☀️" : "🌙"}{sidebar && (dark ? " Light" : " Dark")}
+              </button>
+              {sidebar && (
+                <button onClick={() => signOut()} style={{ background: "#7f1d1d33", color: "#ef4444", borderRadius: 7, padding: "6px", fontSize: 12, fontWeight: 600 }}>
+                  Sign Out
+                </button>
+              )}
+            </div>
+          </aside>
+        )}
+
+        {/* ── Mobile full-screen menu overlay ──────────────────────────────── */}
+        {isMobile && mobileMenuOpen && (
+          <div style={{ position: "fixed", inset: 0, zIndex: 200, background: T.dm ? "#06090f" : "#111827", overflowY: "auto", display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "14px 16px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 22 }}>🏆</span>
+                <div style={{ fontFamily: "Oswald", fontSize: 15, fontWeight: 700, color: T.accent, letterSpacing: 1 }}>FIFA WC 2026</div>
+              </div>
+              <button onClick={() => setMobileMenuOpen(false)} style={{ background: "transparent", color: T.muted, fontSize: 22, padding: "4px 8px", lineHeight: 1, minHeight: "auto" }}>✕</button>
+            </div>
+            {profile && (
+              <div style={{ padding: "12px 16px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 38, height: 38, borderRadius: "50%", background: `${T.accent}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, color: T.accent, flexShrink: 0 }}>
+                  {profile.username[0].toUpperCase()}
+                </div>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: T.text }}>{profile.username}</div>
+                  <div style={{ fontSize: 12, color: T.accent }}>{profile.total_points || 0} pts · {fmtOdds(accMul)}</div>
+                </div>
+              </div>
+            )}
+            <div style={{ flex: 1, padding: "8px 0" }}>
+              {nav.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => { setView(item.id); setMobileMenuOpen(false); }}
+                  style={{ display: "flex", alignItems: "center", gap: 14, padding: "13px 20px", cursor: "pointer", color: view === item.id ? T.accent : T.text, background: view === item.id ? `${T.accent}18` : "transparent", borderLeft: `3px solid ${view === item.id ? T.accent : "transparent"}`, transition: "background .15s" }}
+                >
+                  <span style={{ fontSize: /\d/.test(item.icon) && item.icon.length <= 2 ? 13 : 19, minWidth: 28, textAlign: "center" }}>{item.icon}</span>
+                  <span style={{ fontSize: 15, fontWeight: 600 }}>{item.label}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ padding: "14px 16px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 10 }}>
+              <button onClick={() => setDark(!dark)} style={{ flex: 1, background: T.surf2, color: T.text, borderRadius: 9, padding: "11px", fontSize: 14, fontWeight: 600 }}>
+                {dark ? "☀️ Light" : "🌙 Dark"}
+              </button>
+              <button onClick={() => signOut()} style={{ flex: 1, background: "#7f1d1d33", color: "#ef4444", borderRadius: 9, padding: "11px", fontSize: 14, fontWeight: 600 }}>
                 Sign Out
               </button>
-            )}
+            </div>
           </div>
-        </aside>
-        <div
-          style={{
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            minWidth: 0,
-          }}
-        >
+        )}
+
+        {/* ── Main content area ─────────────────────────────────────────────── */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
           <header
             style={{
               background: T.dm ? "#06090f" : "#111827",
               borderBottom: `1px solid ${T.border}`,
-              padding: "10px 16px",
+              padding: isMobile ? "10px 12px" : "10px 16px",
               display: "flex",
               alignItems: "center",
-              gap: 12,
+              gap: isMobile ? 8 : 12,
               position: "sticky",
               top: 0,
               zIndex: 9,
             }}
           >
             <button
-              onClick={() => setSidebar(!sidebar)}
-              style={{
-                background: "transparent",
-                color: "white",
-                fontSize: 18,
-                padding: 2,
-                border: "none",
-                cursor: "pointer",
-              }}
+              onClick={() => isMobile ? setMobileMenuOpen(true) : setSidebar(!sidebar)}
+              style={{ background: "transparent", color: "white", fontSize: 20, padding: "4px 6px", border: "none", cursor: "pointer", lineHeight: 1, minHeight: 44, minWidth: 44, display: "flex", alignItems: "center", justifyContent: "center" }}
             >
               ☰
             </button>
-            <span
-              style={{
-                fontFamily: "Oswald",
-                fontSize: 17,
-                fontWeight: 700,
-                color: "white",
-                letterSpacing: 1,
-              }}
-            >
+            <span style={{ fontFamily: "Oswald", fontSize: isMobile ? 14 : 17, fontWeight: 700, color: "white", letterSpacing: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
               {nav.find((n) => n.id === view)?.icon}{" "}
               {nav.find((n) => n.id === view)?.label}
             </span>
-            <div
-              style={{
-                marginLeft: "auto",
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-              }}
-            >
-              {saving && (
-                <span style={{ fontSize: 11, color: T.accent }}>
-                  💾 Saving…
-                </span>
-              )}
-              <div
-                style={{
-                  background: `${T.accent}22`,
-                  border: `1px solid ${T.accent}44`,
-                  borderRadius: 20,
-                  padding: "3px 12px",
-                  fontSize: 11,
-                  fontWeight: 700,
-                  color: T.accent,
-                }}
-              >
-                {profile?.total_points || 0} pts · {fmtOdds(accMul)}
+            <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10, flexShrink: 0 }}>
+              {saving && !isMobile && <span style={{ fontSize: 11, color: T.accent }}>💾 Saving…</span>}
+              <div style={{ background: `${T.accent}22`, border: `1px solid ${T.accent}44`, borderRadius: 20, padding: isMobile ? "3px 8px" : "3px 12px", fontSize: 11, fontWeight: 700, color: T.accent, whiteSpace: "nowrap" }}>
+                {profile?.total_points || 0} pts{!isMobile && ` · ${fmtOdds(accMul)}`}
               </div>
             </div>
           </header>
-          <main style={{ flex: 1, overflowY: "auto", padding: "16px" }}>
+          <main style={{ flex: 1, overflowY: "auto", padding: isMobile ? "12px" : "16px", paddingBottom: isMobile ? 76 : 16 }}>
             {view === "home" && <HomeView />}
             {view === "groups" && <GroupPredictions />}
             {view === "standings" && <AllStandings />}
             {view === "thirds" && <ThirdPlaceRace />}
-            {view === "r32" && (
-              <KnockoutView
-                stage="r32"
-                title="Round of 32"
-                bracket={R32_BRACKET}
-              />
-            )}
-            {view === "r16" && (
-              <KnockoutView
-                stage="r16"
-                title="Round of 16"
-                bracket={R16_BRACKET}
-              />
-            )}
-            {view === "qf" && (
-              <KnockoutView
-                stage="qf"
-                title="Quarter Finals"
-                bracket={QF_BRACKET}
-              />
-            )}
-            {view === "sf" && (
-              <KnockoutView
-                stage="sf"
-                title="Semi Finals"
-                bracket={SF_BRACKET}
-              />
-            )}
+            {view === "r32" && <KnockoutView stage="r32" title="Round of 32" bracket={R32_BRACKET} />}
+            {view === "r16" && <KnockoutView stage="r16" title="Round of 16" bracket={R16_BRACKET} />}
+            {view === "qf" && <KnockoutView stage="qf" title="Quarter Finals" bracket={QF_BRACKET} />}
+            {view === "sf" && <KnockoutView stage="sf" title="Semi Finals" bracket={SF_BRACKET} />}
             {view === "tp" && <ThirdPlaceMatchView />}
             {view === "final" && <FinalView />}
             {view === "bracket" && <FullBracket />}
             {view === "leaderboard" && <LeaderboardView />}
             {view === "mypreds" && <MyPredictions />}
           </main>
+
+          {/* ── Mobile bottom navigation bar ──────────────────────────────── */}
+          {isMobile && (
+            <nav style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 50, background: T.dm ? "#06090f" : "#111827", borderTop: `1px solid ${T.border}`, display: "flex", height: 60 }}>
+              {BOTTOM_NAV.map((item) => {
+                const isActive = item.id !== "__more__" && view === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => item.id === "__more__" ? setMobileMenuOpen(true) : setView(item.id)}
+                    style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, background: "transparent", color: isActive ? T.accent : T.muted, border: "none", cursor: "pointer", padding: "4px 0", transition: "color .15s", minHeight: 60 }}
+                  >
+                    <span style={{ fontSize: 18, lineHeight: 1 }}>{item.icon}</span>
+                    <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.3 }}>{item.label}</span>
+                  </button>
+                );
+              })}
+            </nav>
+          )}
         </div>
       </div>
     </UCtx.Provider>
@@ -1591,7 +1513,7 @@ function HomeView() {
 }
 
 function GroupPredictions() {
-  const { T, matchPreds, groupQuals, saveGroupQual, savePrediction, matches } = useU();
+  const { T, matchPreds, groupQuals, saveGroupQual, savePrediction, matches, isMobile } = useU();
   const [ag, setAg] = useState("A");
   // Derive qualifier picks directly from context — no local state race condition
   const savedFirst = groupQuals[ag]?.first || "";
@@ -1775,7 +1697,7 @@ function GroupPredictions() {
         })}
       </div>
       <div
-        style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 14 }}
+        style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "280px 1fr", gap: 14 }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {[1, 2, 3].map((md) => (
@@ -2626,9 +2548,10 @@ function MatchLinePredictor({ match, groupId, existing, onSave, T }) {
                       disabled={isLocked}
                       style={{
                         flex: 1,
-                        padding: "2px 0",
-                        borderRadius: 4,
-                        fontSize: 11,
+                        padding: "7px 0",
+                        minHeight: 40,
+                        borderRadius: 6,
+                        fontSize: 13,
                         fontWeight: 700,
                         background:
                           side.g === n ? side.color : `${side.color}18`,
@@ -3193,8 +3116,10 @@ function ThirdPlaceRace() {
 }
 
 function KnockoutView({ stage, title, bracket }) {
-  const { T, qual, knockouts, sfLosers, saveKO, resolve } = useU();
-  const cols = stage === "r32" ? 4 : stage === "r16" ? 4 : 2;
+  const { T, qual, knockouts, sfLosers, saveKO, resolve, isMobile, isTablet } = useU();
+  const cols = stage === "r32" || stage === "r16"
+    ? (isMobile ? 2 : isTablet ? 3 : 4)
+    : (isMobile ? 1 : 2);
   const done = bracket.filter((_, i) => knockouts[`${stage}-${i}`]).length;
   return (
     <div className="fade-up">
@@ -4002,7 +3927,7 @@ function FullBracket() {
 const PAGE_SIZE = 50;
 
 function LeaderboardView() {
-  const { T, leaderboard, profile } = useU();
+  const { T, leaderboard, profile, isMobile } = useU();
   const medals = ["🥇", "🥈", "🥉"];
 
   const [players, setPlayers]     = useState([]);
@@ -4087,73 +4012,107 @@ function LeaderboardView() {
         {" · "}showing {players.length}
       </div>
 
-      <div style={{ background: T.surf, border: `1px solid ${T.border}`, borderRadius: 12, overflow: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 700 }}>
-          <thead>
-            <tr style={{ background: T.surf2 }}>
-              {headers.map((h) => (
-                <th key={h} style={{ padding: "10px 10px", textAlign: "left", fontSize: 11, color: T.muted, fontWeight: 700, borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
+      <div style={{ background: T.surf, border: `1px solid ${T.border}`, borderRadius: 12, overflow: isMobile ? "hidden" : "auto" }}>
+        {isMobile ? (
+          /* ── Mobile card list ─────────────────────────────────────────── */
+          <div>
             {players.map((u, i) => {
               const isMe = u.id === profile?.id;
               const absRank = u.rank ?? (page * PAGE_SIZE + i + 1);
               return (
-                <tr
+                <div
                   key={u.id}
-                  style={{
-                    background: isMe ? `${T.accent}10` : i % 2 === 0 ? "transparent" : T.surf2,
-                    borderBottom: `1px solid ${T.border}33`,
-                  }}
+                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderBottom: `1px solid ${T.border}22`, background: isMe ? `${T.accent}10` : "transparent" }}
                 >
-                  <td style={{ padding: "9px 10px", fontWeight: 700, color: absRank <= 3 ? T.accent : T.text, whiteSpace: "nowrap" }}>
+                  <div style={{ fontFamily: "Oswald", fontSize: absRank <= 3 && !search ? 22 : 16, fontWeight: 700, color: absRank <= 3 && !search ? T.accent : T.muted, minWidth: 36, textAlign: "center" }}>
                     {absRank <= 3 && !search ? medals[absRank - 1] : `#${absRank}`}
-                  </td>
-                  <td style={{ padding: "9px 10px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                      <div style={{ width: 26, height: 26, borderRadius: "50%", background: `${T.accent}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: T.accent, flexShrink: 0 }}>
-                        {u.username[0].toUpperCase()}
-                      </div>
-                      <span style={{ fontWeight: isMe ? 700 : 600, color: isMe ? T.accent : T.text, whiteSpace: "nowrap" }}>
-                        {u.username}{isMe ? " (you)" : ""}
-                      </span>
+                  </div>
+                  <div style={{ width: 34, height: 34, borderRadius: "50%", background: `${T.accent}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: T.accent, flexShrink: 0 }}>
+                    {u.username[0].toUpperCase()}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: isMe ? 700 : 600, color: isMe ? T.accent : T.text, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {u.username}{isMe ? " (you)" : ""}
                     </div>
-                  </td>
-                  <td style={{ padding: "9px 10px", color: T.muted, whiteSpace: "nowrap" }}>{u.country || "—"}</td>
-                  <td style={{ padding: "9px 10px", fontFamily: "Oswald", fontSize: 16, fontWeight: 700, color: T.accent }}>{u.total_points}</td>
-                  <td style={{ padding: "9px 10px", color: T.green, whiteSpace: "nowrap" }}>{u.accuracy_pct ?? 0}%</td>
-                  <td style={{ padding: "9px 10px" }}>
-                    <span style={{ background: `${T.accent}22`, color: T.accent, borderRadius: 4, padding: "1px 6px", fontSize: 11, fontWeight: 700 }}>{u.exact_predictions || 0}</span>
-                  </td>
-                  <td style={{ padding: "9px 10px" }}>
-                    <span style={{ background: `${T.green}22`, color: T.green, borderRadius: 4, padding: "1px 6px", fontSize: 11, fontWeight: 700 }}>{u.correct_predictions || 0}</span>
-                  </td>
-                  <td style={{ padding: "9px 10px", color: T.text }}>{u.total_predictions || 0}</td>
-                  <td style={{ padding: "9px 10px", color: T.green, fontWeight: 600 }}>{u.predictions_won || 0}</td>
-                  <td style={{ padding: "9px 10px", color: T.red, fontWeight: 600 }}>{u.predictions_lost || 0}</td>
-                </tr>
+                    <div style={{ fontSize: 11, color: T.muted, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {u.country || "—"} · {u.accuracy_pct ?? 0}% acc · {u.total_predictions || 0} picks
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right", flexShrink: 0 }}>
+                    <div style={{ fontFamily: "Oswald", fontSize: 18, fontWeight: 700, color: T.accent, lineHeight: 1 }}>{u.total_points}</div>
+                    <div style={{ fontSize: 10, color: T.muted, marginTop: 2 }}>pts</div>
+                  </div>
+                </div>
               );
             })}
             {players.length === 0 && !loadingP && (
-              <tr>
-                <td colSpan={10} style={{ padding: 40, textAlign: "center", color: T.muted }}>
-                  {search ? `No players found for "${search}"` : "No players registered yet — be the first!"}
-                </td>
-              </tr>
+              <div style={{ padding: 40, textAlign: "center", color: T.muted }}>
+                {search ? `No players found for "${search}"` : "No players registered yet — be the first!"}
+              </div>
             )}
-            {loadingP && (
-              <tr>
-                <td colSpan={10} style={{ padding: 20, textAlign: "center", color: T.muted, fontSize: 12 }}>
-                  Loading…
-                </td>
+            {loadingP && <div style={{ padding: 20, textAlign: "center", color: T.muted, fontSize: 12 }}>Loading…</div>}
+          </div>
+        ) : (
+          /* ── Desktop table ────────────────────────────────────────────── */
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 700 }}>
+            <thead>
+              <tr style={{ background: T.surf2 }}>
+                {headers.map((h) => (
+                  <th key={h} style={{ padding: "10px 10px", textAlign: "left", fontSize: 11, color: T.muted, fontWeight: 700, borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" }}>
+                    {h}
+                  </th>
+                ))}
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {players.map((u, i) => {
+                const isMe = u.id === profile?.id;
+                const absRank = u.rank ?? (page * PAGE_SIZE + i + 1);
+                return (
+                  <tr key={u.id} style={{ background: isMe ? `${T.accent}10` : i % 2 === 0 ? "transparent" : T.surf2, borderBottom: `1px solid ${T.border}33` }}>
+                    <td style={{ padding: "9px 10px", fontWeight: 700, color: absRank <= 3 ? T.accent : T.text, whiteSpace: "nowrap" }}>
+                      {absRank <= 3 && !search ? medals[absRank - 1] : `#${absRank}`}
+                    </td>
+                    <td style={{ padding: "9px 10px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                        <div style={{ width: 26, height: 26, borderRadius: "50%", background: `${T.accent}33`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: T.accent, flexShrink: 0 }}>
+                          {u.username[0].toUpperCase()}
+                        </div>
+                        <span style={{ fontWeight: isMe ? 700 : 600, color: isMe ? T.accent : T.text, whiteSpace: "nowrap" }}>
+                          {u.username}{isMe ? " (you)" : ""}
+                        </span>
+                      </div>
+                    </td>
+                    <td style={{ padding: "9px 10px", color: T.muted, whiteSpace: "nowrap" }}>{u.country || "—"}</td>
+                    <td style={{ padding: "9px 10px", fontFamily: "Oswald", fontSize: 16, fontWeight: 700, color: T.accent }}>{u.total_points}</td>
+                    <td style={{ padding: "9px 10px", color: T.green, whiteSpace: "nowrap" }}>{u.accuracy_pct ?? 0}%</td>
+                    <td style={{ padding: "9px 10px" }}>
+                      <span style={{ background: `${T.accent}22`, color: T.accent, borderRadius: 4, padding: "1px 6px", fontSize: 11, fontWeight: 700 }}>{u.exact_predictions || 0}</span>
+                    </td>
+                    <td style={{ padding: "9px 10px" }}>
+                      <span style={{ background: `${T.green}22`, color: T.green, borderRadius: 4, padding: "1px 6px", fontSize: 11, fontWeight: 700 }}>{u.correct_predictions || 0}</span>
+                    </td>
+                    <td style={{ padding: "9px 10px", color: T.text }}>{u.total_predictions || 0}</td>
+                    <td style={{ padding: "9px 10px", color: T.green, fontWeight: 600 }}>{u.predictions_won || 0}</td>
+                    <td style={{ padding: "9px 10px", color: T.red, fontWeight: 600 }}>{u.predictions_lost || 0}</td>
+                  </tr>
+                );
+              })}
+              {players.length === 0 && !loadingP && (
+                <tr>
+                  <td colSpan={10} style={{ padding: 40, textAlign: "center", color: T.muted }}>
+                    {search ? `No players found for "${search}"` : "No players registered yet — be the first!"}
+                  </td>
+                </tr>
+              )}
+              {loadingP && (
+                <tr>
+                  <td colSpan={10} style={{ padding: 20, textAlign: "center", color: T.muted, fontSize: 12 }}>Loading…</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {hasMore && !loadingP && (
@@ -4294,7 +4253,10 @@ function MyPredictions() {
 
 function AdminApp({ T, dark, setDark }) {
   const { profile } = useAuth();
+  const screenW = useWindowSize();
+  const isMobile = screenW < BP.md;
   const [view, setView] = useState("overview");
+  const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const [users, setUsers] = useState([]);
   const [selUser, setSelUser] = useState(null);
   const [userPreds, setUserP] = useState([]);
@@ -4333,6 +4295,31 @@ function AdminApp({ T, dark, setDark }) {
         rel="stylesheet"
       />
       <GS T={T} />
+      {/* Mobile admin menu overlay */}
+      {isMobile && adminMenuOpen && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 200, background: T.dm ? "#06090f" : "#111827", overflowY: "auto", display: "flex", flexDirection: "column" }}>
+          <div style={{ padding: "14px 16px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 20 }}>🛡️</span>
+              <div style={{ fontFamily: "Oswald", fontSize: 14, fontWeight: 700, color: "#ef4444", letterSpacing: 1 }}>ADMIN PANEL</div>
+            </div>
+            <button onClick={() => setAdminMenuOpen(false)} style={{ background: "transparent", color: T.muted, fontSize: 22, padding: "4px 8px", lineHeight: 1, minHeight: "auto" }}>✕</button>
+          </div>
+          <div style={{ flex: 1, padding: "8px 0" }}>
+            {nav.map((item) => (
+              <div key={item.id} onClick={() => { setView(item.id); setAdminMenuOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 14, padding: "13px 20px", cursor: "pointer", color: view === item.id ? T.accent : T.text, background: view === item.id ? `${T.accent}18` : "transparent", borderLeft: `3px solid ${view === item.id ? T.accent : "transparent"}` }}>
+                <span style={{ fontSize: 18, minWidth: 26, textAlign: "center" }}>{item.icon}</span>
+                <span style={{ fontSize: 15, fontWeight: 600 }}>{item.label}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ padding: "14px 16px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 10 }}>
+            <button onClick={() => setDark(!dark)} style={{ flex: 1, background: T.surf2, color: T.text, borderRadius: 9, padding: "11px", fontSize: 14, fontWeight: 600 }}>{dark ? "☀️ Light" : "🌙 Dark"}</button>
+            <button onClick={() => signOut()} style={{ flex: 1, background: "#7f1d1d33", color: "#ef4444", borderRadius: 9, padding: "11px", fontSize: 14, fontWeight: 600 }}>Sign Out</button>
+          </div>
+        </div>
+      )}
+      {!isMobile && (
       <aside
         style={{
           width: 220,
@@ -4439,6 +4426,7 @@ function AdminApp({ T, dark, setDark }) {
           </button>
         </div>
       </aside>
+      )}
       <div
         style={{
           flex: 1,
@@ -4451,18 +4439,30 @@ function AdminApp({ T, dark, setDark }) {
           style={{
             background: T.dm ? "#06090f" : "#111827",
             borderBottom: `1px solid ${T.border}`,
-            padding: "10px 16px",
+            padding: isMobile ? "10px 12px" : "10px 16px",
             display: "flex",
             alignItems: "center",
             gap: 12,
           }}
         >
+          {isMobile && (
+            <button
+              onClick={() => setAdminMenuOpen(true)}
+              style={{ background: "transparent", color: "white", fontSize: 20, padding: "4px 6px", border: "none", cursor: "pointer", lineHeight: 1, minHeight: 44, minWidth: 44, display: "flex", alignItems: "center", justifyContent: "center" }}
+            >
+              ☰
+            </button>
+          )}
           <span
             style={{
               fontFamily: "Oswald",
-              fontSize: 17,
+              fontSize: isMobile ? 14 : 17,
               fontWeight: 700,
               color: "white",
+              flex: 1,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
             }}
           >
             {nav.find((n) => n.id === view)?.icon}{" "}
@@ -4470,20 +4470,21 @@ function AdminApp({ T, dark, setDark }) {
           </span>
           <div
             style={{
-              marginLeft: "auto",
+              flexShrink: 0,
               background: "#ef444422",
               border: "1px solid #ef444444",
               borderRadius: 20,
-              padding: "3px 12px",
+              padding: "3px 10px",
               fontSize: 11,
               fontWeight: 700,
               color: "#ef4444",
+              whiteSpace: "nowrap",
             }}
           >
-            🛡️ READ-ONLY
+            🛡️ {isMobile ? "" : "READ-ONLY"}
           </div>
         </header>
-        <main style={{ flex: 1, overflowY: "auto", padding: "16px" }}>
+        <main style={{ flex: 1, overflowY: "auto", padding: isMobile ? "12px" : "16px", paddingBottom: isMobile ? 20 : 16 }}>
           {view === "overview" && (
             <div className="fade-up">
               <div
@@ -5150,13 +5151,14 @@ function Loader({ T }) {
     </div>
   );
 }
-function Toast({ msg, type, T }) {
+function Toast({ msg, type, T, isMobile }) {
   return (
     <div
       style={{
         position: "fixed",
-        top: 20,
-        right: 20,
+        ...(isMobile
+          ? { bottom: 76, left: "50%", transform: "translateX(-50%)", maxWidth: "calc(100vw - 32px)" }
+          : { top: 20, right: 20, maxWidth: 320 }),
         zIndex: 9999,
         background: type === "error" ? T.red : T.green,
         color: "#fff",
@@ -5166,7 +5168,9 @@ function Toast({ msg, type, T }) {
         fontWeight: 600,
         boxShadow: "0 4px 20px rgba(0,0,0,.4)",
         animation: "fadeUp .3s ease forwards",
-        maxWidth: 300,
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
       }}
     >
       {type === "error" ? "❌" : "✅"} {msg}
