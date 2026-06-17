@@ -3,9 +3,10 @@
 -- Run this in your Supabase SQL Editor (Project → SQL Editor)
 -- ═══════════════════════════════════════════════════════════════════
 
--- 1. Add country to profiles
+-- 1. Add columns to profiles that may be missing on older DBs
 ALTER TABLE public.profiles
-  ADD COLUMN IF NOT EXISTS country TEXT;
+  ADD COLUMN IF NOT EXISTS country    TEXT,
+  ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 
 -- 2. Scoring config table (configurable points, no code deploy required)
 CREATE TABLE IF NOT EXISTS public.scoring_config (
@@ -72,7 +73,6 @@ SELECT
   p.id,
   p.username,
   p.display_name,
-  p.avatar_url,
   p.country,
   p.total_points,
   p.total_bets                                                    AS total_predictions,
@@ -90,7 +90,7 @@ FROM public.profiles p
 LEFT JOIN public.predictions pr ON pr.user_id = p.id
 WHERE COALESCE(p.role, 'user') != 'admin'
 GROUP BY
-  p.id, p.username, p.display_name, p.avatar_url, p.country,
+  p.id, p.username, p.display_name, p.country,
   p.total_points, p.total_bets, p.correct_bets;
 
 -- Grant PostgREST access to the leaderboard view
