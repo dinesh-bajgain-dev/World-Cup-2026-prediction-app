@@ -368,12 +368,19 @@ function AuthPage({ T, dark, setDark }) {
   const [resendMsg, setResendMsg] = useState("");
 
   const sendOTP = async () => {
-    const res  = await fetch("/api/send-otp", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, username: uname }),
-    });
-    return res.json();
+    try {
+      const res = await fetch("/api/send-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, username: uname }),
+      });
+      if (!res.ok && res.headers.get("content-type")?.includes("text/html")) {
+        return { success: false, error: `Server error (${res.status}) — /api/send-otp not found` };
+      }
+      return await res.json();
+    } catch (e) {
+      return { success: false, error: e.message || "Network error sending OTP" };
+    }
   };
 
   const submit = async () => {
@@ -386,10 +393,18 @@ function AuthPage({ T, dark, setDark }) {
       if (!uname.trim()) { setErr("Username required"); setBusy(false); return; }
 
       const { data, error } = await signUp(email, pw, uname, country || null);
-      if (error) {
+
+      // Supabase may throw "Error sending confirmation email" when its own email
+      // system is disabled/rate-limited. The user account IS created in that case,
+      // so treat it as a recoverable error and fall through to our OTP flow.
+      const isSupabaseEmailError =
+        error && /sending confirmation email|email.*not confirmed|confirm.*email/i.test(error.message);
+
+      if (error && !isSupabaseEmailError) {
+        // Real error (e.g. email already registered, weak password)
         setErr(error.message);
       } else {
-        // Account created (session may or may not be returned depending on Supabase settings).
+        // Account created (or email error that we handle ourselves).
         // Always send our own OTP so email ownership is verified.
         const result = await sendOTP();
         if (result.success) {
@@ -426,8 +441,9 @@ function AuthPage({ T, dark, setDark }) {
   const resendOTP = async () => {
     setResending(true);
     setResendMsg("");
+    setOtpErr("");
     const result = await sendOTP();
-    setResendMsg(result.success ? "New code sent!" : (result.error || "Failed to resend"));
+    setResendMsg(result.success ? "New code sent! Check your inbox." : (result.error || "Failed to resend"));
     setResending(false);
   };
   return (

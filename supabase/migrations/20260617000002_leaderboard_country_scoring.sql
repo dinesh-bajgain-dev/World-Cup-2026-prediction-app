@@ -30,12 +30,29 @@ ON CONFLICT (key) DO NOTHING;
 
 -- Grant authenticated users read access to scoring config
 ALTER TABLE public.scoring_config ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "scoring_config_read" ON public.scoring_config
+
+DROP POLICY IF EXISTS scoring_config_read        ON public.scoring_config;
+DROP POLICY IF EXISTS scoring_config_admin_write ON public.scoring_config;
+
+CREATE POLICY scoring_config_read ON public.scoring_config
   FOR SELECT TO authenticated USING (TRUE);
-CREATE POLICY "scoring_config_admin_write" ON public.scoring_config
-  FOR ALL USING (
-    EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
-  );
+
+-- Admin write: only created when the profiles.role column already exists
+-- (safe for both fresh migrations and existing DBs)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'profiles'
+      AND column_name  = 'role'
+  ) THEN
+    CREATE POLICY scoring_config_admin_write ON public.scoring_config
+      FOR ALL USING (
+        EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+      );
+  END IF;
+END $$;
 
 -- 3. Drop and recreate leaderboard view with all required columns
 DROP VIEW IF EXISTS public.leaderboard;
