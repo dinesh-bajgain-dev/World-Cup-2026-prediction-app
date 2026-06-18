@@ -63,6 +63,58 @@ import {
   FINAL_MATCH,
 } from "../lib/qualification";
 
+// ─── Pure qual derivation (used both in useMemo and cascade) ─────────────────
+function deriveQual(groupQuals, knockouts) {
+  const winners = {}, runnersUp = {};
+  for (const [g, picks] of Object.entries(groupQuals)) {
+    if (picks.first)  winners[g]   = picks.first;
+    if (picks.second) runnersUp[g] = picks.second;
+  }
+  const qualified3 = [];
+  for (let i = 0; i < 8; i++) {
+    const team = knockouts[`t3-${i}`];
+    if (team) qualified3.push({ team, position: i + 1 });
+  }
+  return { winners, runnersUp, qualified3, thirdRows: qualified3, allStandings: {} };
+}
+
+// ─── Cascade invalidation ────────────────────────────────────────────────────
+// After any prediction change, walk every subsequent stage and remove stored
+// winners whose two participants have changed. Returns new { ko, sfl } objects.
+// fromStage: the first stage to validate ('r32' | 'r16' | 'qf' | 'sf' | null)
+function cascadeKO(ko, sfl, qual, fromStage) {
+  const STAGES = [
+    ['r32', R32_BRACKET],
+    ['r16', R16_BRACKET],
+    ['qf',  QF_BRACKET ],
+    ['sf',  SF_BRACKET ],
+  ];
+  let k = { ...ko }, s = { ...sfl };
+  const startIdx = STAGES.findIndex(([st]) => st === fromStage);
+  for (let si = startIdx; si >= 0 && si < STAGES.length; si++) {
+    const [stage, bracket] = STAGES[si];
+    for (let i = 0; i < bracket.length; i++) {
+      const stored = k[`${stage}-${i}`];
+      if (!stored) continue;
+      const home = resolveSlot(bracket[i].homeSlot, qual, k, s);
+      const away = resolveSlot(bracket[i].awaySlot, qual, k, s);
+      if (stored !== home && stored !== away) {
+        delete k[`${stage}-${i}`];
+        if (stage === 'sf') delete s[`sf-${i}`];
+      }
+    }
+  }
+  // Final: winner must be one of the two SF winners
+  if (k['final-0'] && k['final-0'] !== k['sf-0'] && k['final-0'] !== k['sf-1']) {
+    delete k['final-0'];
+  }
+  // 3rd place: winner must be one of the two SF losers
+  if (k['tp-0'] && k['tp-0'] !== s['sf-0'] && k['tp-0'] !== s['sf-1']) {
+    delete k['tp-0'];
+  }
+  return { ko: k, sfl: s };
+}
+
 // ─── Responsive breakpoints & window-size hook ───────────────────────────────
 const BP = { sm: 480, md: 768, lg: 1024 };
 function useWindowSize() {
@@ -765,7 +817,7 @@ function UserApp({ T, dark, setDark }) {
   const [groupResults, setGR] = useState(() => lsRead().groupResults || {});
   const [groupQuals, setGQ] = useState(() => lsRead().groupQuals || {});
   const [knockouts, setKO] = useState(() => lsRead().knockouts || {});
-  const [sfLosers, setSFL] = useState({});
+  const [sfLosers, setSFL] = useState(() => lsRead().sfLosers || {});
   const [matchPreds, setMP] = useState(() => lsRead().matchPreds || {});
   const [leaderboard, setLB] = useState([]);
   const [matches, setMatches] = useState([]); // Dynamic matches from DB
@@ -995,12 +1047,14 @@ const savePrediction = async (gId, matchId, hs, as) => {
 };
   const saveGroupQual = async (groupId, first, second) => {
     if (!profile) return;
-    // ── Optimistic update ─────────────────────────────────────────────────────
-    setGQ((prev) => {
-      const next = { ...prev, [groupId]: { first, second } };
-      lsWrite({ groupQuals: next });
-      return next;
-    });
+    // ── Compute new groupQuals + cascade from R32 ─────────────────────────────
+    const newGQ = { ...groupQuals, [groupId]: { first, second } };
+    const newQual = deriveQual(newGQ, knockouts);
+    const { ko: newKO, sfl: newSFL } = cascadeKO(knockouts, sfLosers, newQual, "r32");
+    setGQ(newGQ);
+    setKO(newKO);
+    setSFL(newSFL);
+    lsWrite({ groupQuals: newGQ, knockouts: newKO, sfLosers: newSFL });
     showToast(`✓ Group ${groupId} qualifiers saved`);
     // ── Supabase persist ──────────────────────────────────────────────────────
     const { data, error } = await upsertGroupQual({
@@ -1029,24 +1083,55 @@ const savePrediction = async (gId, matchId, hs, as) => {
       return next;
     });
   };
-  const saveKO = async (stage, idx, winner) => {
+  const saveKO = async (stage, idx, winner, loserTeam) => {
     if (!profile) return;
-    // ── Optimistic update ─────────────────────────────────────────────────────
-    setKO((prev) => {
-      const next = { ...prev, [`${stage}-${idx}`]: winner };
-      lsWrite({ knockouts: next });
-      return next;
-    });
-    if (stage === "sf") {
-      const b = SF_BRACKET[idx];
-      if (b) {
-        const h = resolve(b.homeSlot),
-          a = resolve(b.awaySlot);
-        setSFL((prev) => ({ ...prev, [`sf-${idx}`]: winner === h ? a : h }));
+
+    // ── 1. Apply the pick ─────────────────────────────────────────────────────
+    let newKO = { ...knockouts, [`${stage}-${idx}`]: winner };
+    let newSFL = { ...sfLosers };
+
+    // ── 2. Same-stage uniqueness: remove this team from any other match in
+    //       the same stage (a team can only win one match per round) ──────────
+    const stageSizes = { t3: 8, r32: 16, r16: 8, qf: 4, sf: 2 };
+    const matchCount = stageSizes[stage];
+    if (matchCount) {
+      for (let i = 0; i < matchCount; i++) {
+        if (i !== idx && newKO[`${stage}-${i}`] === winner) {
+          delete newKO[`${stage}-${i}`];
+        }
       }
     }
+
+    // ── 3. Handle SF loser → 3rd place slot ──────────────────────────────────
+    if (stage === "sf") {
+      let loser = loserTeam;
+      if (!loser || loser === "TBD") {
+        const b = SF_BRACKET[idx];
+        if (b) {
+          const h = resolveSlot(b.homeSlot, qual, knockouts, sfLosers);
+          const a = resolveSlot(b.awaySlot, qual, knockouts, sfLosers);
+          loser = winner === h ? a : h;
+        }
+      }
+      if (loser && loser !== "TBD") newSFL[`sf-${idx}`] = loser;
+    }
+
+    // ── 4. Cascade — remove any now-invalid downstream picks ─────────────────
+    // T3 picks affect qual.qualified3, so re-derive qual with the updated knockouts
+    // before cascading so the new T3 team names are used for R32 slot resolution.
+    const nextStageMap = { t3: "r32", r32: "r16", r16: "qf", qf: "sf" };
+    const fromStage = nextStageMap[stage] ?? null;
+    const cascadeQual = stage === "t3" ? deriveQual(groupQuals, newKO) : qual;
+    ({ ko: newKO, sfl: newSFL } = cascadeKO(newKO, newSFL, cascadeQual, fromStage));
+
+    // ── 5. Commit to state + localStorage ────────────────────────────────────
+    setKO(newKO);
+    setSFL(newSFL);
+    lsWrite({ knockouts: newKO, sfLosers: newSFL });
+
     showToast(`${winner} picked!`);
-    // ── Supabase persist ──────────────────────────────────────────────────────
+
+    // ── 5. Supabase persist ───────────────────────────────────────────────────
     const { error } = await upsertKnockoutPred({
       user_id: profile.id,
       stage,
@@ -1055,21 +1140,19 @@ const savePrediction = async (gId, matchId, hs, as) => {
     });
     if (error) showToast(error.message, "error");
   };
+
+  // Direct setter for 3rd-place teams when user hasn't gone through SF bracket
+  const saveSFLoser = (idx, team) => {
+    const newSFL = { ...sfLosers, [`sf-${idx}`]: team };
+    // Cascade: clear tp-0 if its team is no longer a 3rd-place participant
+    const { ko: newKO, sfl: cleanSFL } = cascadeKO(knockouts, newSFL, qual, null);
+    setSFL(cleanSFL);
+    setKO(newKO);
+    lsWrite({ sfLosers: cleanSFL, knockouts: newKO });
+  };
+
   // Derive qualification from manual picks (groupQuals 1st/2nd + knockouts t3-0..t3-7)
-  const qual = useMemo(() => {
-    const winners = {};
-    const runnersUp = {};
-    for (const [g, picks] of Object.entries(groupQuals)) {
-      if (picks.first)  winners[g]   = picks.first;
-      if (picks.second) runnersUp[g] = picks.second;
-    }
-    const qualified3 = [];
-    for (let i = 0; i < 8; i++) {
-      const team = knockouts[`t3-${i}`];
-      if (team) qualified3.push({ team, position: i + 1 });
-    }
-    return { winners, runnersUp, qualified3, thirdRows: qualified3, allStandings: {} };
-  }, [groupQuals, knockouts]);
+  const qual = useMemo(() => deriveQual(groupQuals, knockouts), [groupQuals, knockouts]);
   const resolve = useCallback(
     (slot) => resolveSlot(slot, qual, knockouts, sfLosers),
     [qual, knockouts, sfLosers],
@@ -1106,6 +1189,7 @@ const savePrediction = async (gId, matchId, hs, as) => {
     savePrediction,
     saveGroupQual,
     saveKO,
+    saveSFLoser,
     saving,
     leaderboard,
     totalPreds,
@@ -3315,9 +3399,12 @@ function KnockoutView({ stage, title, bracket }) {
                 <div
                   key={ti}
                   className={`team-btn${winner === team ? " winner-glow" : ""}`}
-                  onClick={() =>
-                    team !== "TBD" && saveKO(stage, i, team)
-                  }
+                  onClick={() => {
+                    if (team === "TBD") return;
+                    // For SF matches, pass the loser explicitly so 3rd place auto-populates
+                    const loser = stage === "sf" ? (team === home ? away : home) : undefined;
+                    saveKO(stage, i, team, loser);
+                  }}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -3414,20 +3501,20 @@ function KnockoutView({ stage, title, bracket }) {
 }
 
 function ThirdPlaceMatchView() {
-  const { T, knockouts, sfLosers, saveKO } = useU();
-  const home = sfLosers["sf-0"] || "TBD",
-    away = sfLosers["sf-1"] || "TBD",
-    winner = knockouts["tp-0"];
+  const { T, knockouts, sfLosers, saveKO, saveSFLoser } = useU();
+  const home = sfLosers["sf-0"] || "TBD";
+  const away = sfLosers["sf-1"] || "TBD";
+  const winner = knockouts["tp-0"];
   const bothTBD = home === "TBD" && away === "TBD";
   const allTeams = Object.values(GROUPS).flatMap((g) => g.teams).sort();
   return (
     <div className="fade-up" style={{ maxWidth: 540, margin: "0 auto" }}>
-      <div style={{ textAlign: "center", marginBottom: 20 }}>
-        <div style={{ fontSize: 48 }}>🥉</div>
+      <div style={{ textAlign: "center", marginBottom: 22 }}>
+        <div style={{ fontSize: 52 }}>🥉</div>
         <h1
           style={{
             fontFamily: "Oswald",
-            fontSize: 30,
+            fontSize: 34,
             color: T.accent,
             letterSpacing: 2,
           }}
@@ -3446,18 +3533,18 @@ function ThirdPlaceMatchView() {
       <div
         style={{
           background: T.surf,
-          border: `1px solid ${T.border}`,
+          border: `1px solid ${T.accent}44`,
           borderRadius: 13,
-          padding: 22,
+          padding: 24,
         }}
       >
-        <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 12, alignItems: "stretch" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 14, alignItems: "stretch" }}>
           {/* Home team */}
           <div
             className={`team-btn${winner === home ? " celebrate" : ""}`}
             onClick={() => home !== "TBD" && saveKO("tp", 0, home)}
             style={{
-              textAlign: "center", padding: 16, borderRadius: 11,
+              textAlign: "center", padding: 18, borderRadius: 11,
               cursor: home === "TBD" ? "default" : "pointer",
               background: winner === home ? `${T.accent}2a` : T.surf2,
               border: `2px solid ${winner === home ? T.accent : T.border}`,
@@ -3465,13 +3552,14 @@ function ThirdPlaceMatchView() {
               display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
             }}
           >
-            <div style={{ fontSize: 48, marginBottom: 7 }}>{FLAG(home)}</div>
+            <div style={{ fontSize: 56, marginBottom: 7 }}>{FLAG(home)}</div>
             <div style={{ fontFamily: "Oswald", fontSize: 15, fontWeight: 700, color: winner === home ? T.accent : T.text }}>{home}</div>
-            {winner === home && <div style={{ fontSize: 18, marginTop: 5 }}>🥉</div>}
+            <div style={{ fontSize: 9, color: T.muted, marginTop: 2 }}>FIFA #{RANK(home)}</div>
+            {winner === home && <div style={{ fontSize: 22, marginTop: 6 }}>🥉</div>}
           </div>
 
-          {/* VS — centered between the two cards */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Oswald", fontSize: 20, color: T.accent, fontWeight: 700, padding: "0 4px" }}>
+          {/* VS */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Oswald", fontSize: 22, color: T.accent, fontWeight: 700, padding: "0 4px" }}>
             VS
           </div>
 
@@ -3480,7 +3568,7 @@ function ThirdPlaceMatchView() {
             className={`team-btn${winner === away ? " celebrate" : ""}`}
             onClick={() => away !== "TBD" && saveKO("tp", 0, away)}
             style={{
-              textAlign: "center", padding: 16, borderRadius: 11,
+              textAlign: "center", padding: 18, borderRadius: 11,
               cursor: away === "TBD" ? "default" : "pointer",
               background: winner === away ? `${T.accent}2a` : T.surf2,
               border: `2px solid ${winner === away ? T.accent : T.border}`,
@@ -3488,87 +3576,50 @@ function ThirdPlaceMatchView() {
               display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
             }}
           >
-            <div style={{ fontSize: 48, marginBottom: 7 }}>{FLAG(away)}</div>
+            <div style={{ fontSize: 56, marginBottom: 7 }}>{FLAG(away)}</div>
             <div style={{ fontFamily: "Oswald", fontSize: 15, fontWeight: 700, color: winner === away ? T.accent : T.text }}>{away}</div>
-            {winner === away && <div style={{ fontSize: 18, marginTop: 5 }}>🥉</div>}
+            <div style={{ fontSize: 9, color: T.muted, marginTop: 2 }}>FIFA #{RANK(away)}</div>
+            {winner === away && <div style={{ fontSize: 22, marginTop: 6 }}>🥉</div>}
           </div>
         </div>
+
         {winner && (
-          <div
-            style={{
-              textAlign: "center",
-              marginTop: 14,
-              padding: "8px",
-              background: `${T.accent}18`,
-              borderRadius: 8,
-              fontSize: 13,
-              color: T.accent,
-              fontWeight: 700,
-            }}
-          >
+          <div style={{ textAlign: "center", marginTop: 16, padding: "10px", background: `${T.accent}18`, borderRadius: 9, fontSize: 13, color: T.accent, fontWeight: 700 }}>
             🥉 {FLAG(winner)} {winner} — 3rd Place!
           </div>
         )}
         {!winner && !bothTBD && (
-          <p
-            style={{
-              textAlign: "center",
-              color: T.muted,
-              fontSize: 11,
-              marginTop: 12,
-            }}
-          >
-            Click to pick the 3rd place team
+          <p style={{ textAlign: "center", color: T.muted, fontSize: 11, marginTop: 14 }}>
+            Click a team to pick the 3rd place winner
           </p>
         )}
         {bothTBD && (
-          <div
-            style={{
-              marginTop: 14,
-              padding: "12px 14px",
-              background: `${T.blue}12`,
-              border: `1px solid ${T.blue}33`,
-              borderRadius: 9,
-            }}
-          >
-            <div style={{ fontSize: 11, color: T.muted, marginBottom: 8 }}>
-              Or pick any team directly for 3rd place:
-            </div>
-            <select
-              value={winner || ""}
-              onChange={(e) =>
-                e.target.value && saveKO("tp", 0, e.target.value)
-              }
-              style={{
-                width: "100%",
-                padding: "9px 10px",
-                borderRadius: 7,
-                border: `1px solid ${T.border}`,
-                background: T.surf2,
-                color: T.text,
-                fontSize: 14,
-              }}
-            >
-              <option value="">— Select 3rd place team —</option>
-              {allTeams.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-            {winner && (
-              <div
-                style={{
-                  marginTop: 10,
-                  textAlign: "center",
-                  color: T.accent,
-                  fontWeight: 700,
-                  fontSize: 13,
-                }}
-              >
-                🥉 {FLAG(winner)} {winner} — 3rd Place!
+          <div style={{ marginTop: 14, padding: "12px 14px", background: `${T.blue}12`, border: `1px solid ${T.blue}33`, borderRadius: 9 }}>
+            <div style={{ fontSize: 11, color: T.muted, marginBottom: 8 }}>Or pick teams directly:</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div>
+                <div style={{ fontSize: 10, color: T.muted, marginBottom: 4, fontFamily: "Oswald" }}>TEAM 1</div>
+                <select
+                  value={home === "TBD" ? "" : home}
+                  onChange={(e) => e.target.value && saveSFLoser(0, e.target.value)}
+                  style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: `1px solid ${T.border}`, background: T.surf2, color: T.text, fontSize: 13 }}
+                >
+                  <option value="">— Select team —</option>
+                  {allTeams.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
               </div>
-            )}
+              <div>
+                <div style={{ fontSize: 10, color: T.muted, marginBottom: 4, fontFamily: "Oswald" }}>TEAM 2</div>
+                <select
+                  value={away === "TBD" ? "" : away}
+                  onChange={(e) => e.target.value && saveSFLoser(1, e.target.value)}
+                  style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: `1px solid ${T.border}`, background: T.surf2, color: T.text, fontSize: 13 }}
+                >
+                  <option value="">— Select team —</option>
+                  {allTeams.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+            </div>
           </div>
         )}
       </div>
